@@ -1,0 +1,25 @@
+{
+  "name": "web-db",
+  "version": "1.0.0",
+  "description": "An interactive, in-browser Oracle Database learning environment designed for students to practice Oracle SQL syntax, DDL/DML commands, queries, and constraints with instant visual feedback.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:lan": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node tests/verify-all.js"
+  },
+  "dependencies": {
+    "monaco-editor": "^0.55.1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "svelte": "^5.57.3",
+    "vite": "^8.3.5"
+  }
+}
