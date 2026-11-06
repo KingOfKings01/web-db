@@ -123,11 +123,34 @@
     });
   }
 
+  function to6Hex(color, fallback) {
+    if (!color || typeof color !== 'string') return fallback;
+    const c = color.trim();
+    if (/^#?[0-9A-Fa-f]{3}$/.test(c)) {
+      const raw = c.replace('#', '');
+      return '#' + raw[0] + raw[0] + raw[1] + raw[1] + raw[2] + raw[2];
+    }
+    if (/^#?[0-9A-Fa-f]{6}$/.test(c)) {
+      return c.startsWith('#') ? c : '#' + c;
+    }
+    const rgb = c.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+    if (rgb) {
+      return '#' + [rgb[1], rgb[2], rgb[3]].map(x => parseInt(x, 10).toString(16).padStart(2, '0')).join('');
+    }
+    return fallback;
+  }
+
   function applyTheme() {
     if (!monaco) return;
-    const styles = getComputedStyle(document.body);
+    const styles = typeof window !== 'undefined' ? getComputedStyle(document.body) : null;
     const dark = theme === 'theme-dark';
     const themeName = dark ? 'oracle-dark' : 'oracle-light';
+
+    const bg = to6Hex(styles?.getPropertyValue('--bg-surface'), dark ? '#111827' : '#ffffff');
+    const fg = to6Hex(styles?.getPropertyValue('--text-main'), dark ? '#f9fafb' : '#0f172a');
+    const subtle = to6Hex(styles?.getPropertyValue('--text-subtle'), dark ? '#6b7280' : '#94a3b8');
+    const selection = dark ? '#264f78' : '#add6ff';
+
     monaco.editor.defineTheme(themeName, {
       base: dark ? 'vs-dark' : 'vs',
       inherit: true,
@@ -141,11 +164,11 @@
         { token: 'predefined.sql', foreground: dark ? '4EC9B0' : '267F99' }
       ],
       colors: {
-        'editor.background': styles.getPropertyValue('--bg-surface').trim(),
-        'editor.foreground': styles.getPropertyValue('--text-main').trim(),
-        'editorLineNumber.foreground': styles.getPropertyValue('--text-subtle').trim(),
-        'editorCursor.foreground': styles.getPropertyValue('--text-main').trim(),
-        'editor.selectionBackground': dark ? '#264f78' : '#add6ff'
+        'editor.background': bg,
+        'editor.foreground': fg,
+        'editorLineNumber.foreground': subtle,
+        'editorCursor.foreground': fg,
+        'editor.selectionBackground': selection
       }
     });
     monaco.editor.setTheme(themeName);
