@@ -27,7 +27,7 @@
   let isFullscreen = false;
 
   let currentSuggestions = [];
-  let selectedCategory = 'dql';
+  let selectedCategory = 'auto';
   let activeTableTab = 'courses';
   let showTablePreviewModal = false;
   let previewTableName = 'courses';
@@ -57,6 +57,7 @@
   let repeatTimer = null;
 
   const SQL_CATEGORIES = [
+    { id: 'auto', name: '⚡ Suggestions' },
     { id: 'dql', name: 'DQL' },
     { id: 'dml', name: 'DML' },
     { id: 'ddl', name: 'DDL' },
@@ -69,8 +70,7 @@
     { id: 'date', name: 'Date Func' },
     { id: 'gen', name: 'General Func' },
     { id: 'tables', name: 'Tables' },
-    { id: 'cols', name: 'Columns' },
-    { id: 'auto', name: '⚡ Auto' }
+    { id: 'cols', name: 'Columns' }
   ];
 
   const DQL_ITEMS = [
@@ -126,6 +126,20 @@
     'CASE WHEN', 'THEN', 'ELSE', 'END'
   ].map(t => ({ t, k: t.endsWith('(') ? 'fn' : 'kw' }));
 
+  const ALL_SUGGESTION_ITEMS = [
+    ...DQL_ITEMS,
+    ...DML_ITEMS,
+    ...DDL_ITEMS,
+    ...DCL_ITEMS,
+    ...TCL_ITEMS,
+    ...MATH_ITEMS,
+    ...REGEX_ITEMS,
+    ...AGG_ITEMS,
+    ...STRING_ITEMS,
+    ...DATE_ITEMS,
+    ...GEN_ITEMS
+  ];
+
   $: displayedChips = (() => {
     switch (selectedCategory) {
       case 'dql': return DQL_ITEMS;
@@ -165,7 +179,7 @@
       }
       case 'auto':
       default:
-        return currentSuggestions;
+        return currentSuggestions.length > 0 ? currentSuggestions : DQL_ITEMS.slice(0, 16);
     }
   })();
 
@@ -224,6 +238,36 @@
     gutEl.scrollTop = textareaEl.scrollTop;
   }
 
+  let showAutocomplete = false;
+  let autocompletePos = { top: 30, left: 10 };
+  let selectedSuggestionIndex = 0;
+
+  function updateAutocompletePosition() {
+    if (!textareaEl) return;
+    const s = textareaEl.selectionStart || 0;
+    const v = code.slice(0, s);
+    const lines = v.split('\n');
+    const ln = lines.length - 1;
+    const col = lines[ln].length;
+
+    const lineY = 6 + (ln * 20) - textareaEl.scrollTop;
+    const charX = 8 + (col * 8.4) - textareaEl.scrollLeft;
+
+    const editorH = textareaEl.clientHeight || 150;
+    const editorW = textareaEl.clientWidth || 300;
+
+    let top = lineY + 22;
+    if (top + 160 > editorH && lineY > 160) {
+      top = Math.max(4, lineY - 165);
+    } else {
+      top = Math.max(4, Math.min(top, editorH - 40));
+    }
+
+    let left = Math.max(6, Math.min(charX, editorW - 215));
+
+    autocompletePos = { top, left };
+  }
+
   function updateSuggestions() {
     if (!textareaEl) return;
     const pos = textareaEl.selectionStart || 0;
@@ -236,22 +280,66 @@
 
     const tbItems = schemaInfo.tableNames.map(t => ({ t, k: 'tb' }));
     const clItems = schemaInfo.cols.map(t => ({ t, k: 'cl' }));
-    const kwItems = SQL_KEYWORDS.map(t => ({ t, k: 'kw' }));
 
     let list = [];
     if (currentWord) {
-      list = [...kwItems, ...tbItems, ...clItems]
-        .filter(x => x.t.toLowerCase().startsWith(currentWord.toLowerCase()) && x.t.toLowerCase() !== currentWord.toLowerCase())
-        .slice(0, 14);
-    } else if (/^(FROM|JOIN|INTO|UPDATE|TABLE)$/.test(prevWord)) {
+      const q = currentWord.toLowerCase();
+      const allPool = [
+        ...tbItems,
+        ...clItems,
+        ...ALL_SUGGESTION_ITEMS
+      ];
+      const seen = new Set();
+      const prefixMatches = [];
+      const containsMatches = [];
+
+      for (const item of allPool) {
+        const itemClean = item.t.toLowerCase().replace(/[(;]/g, '');
+        if (seen.has(itemClean)) continue;
+        seen.add(itemClean);
+
+        if (itemClean.startsWith(q)) {
+          prefixMatches.push(item);
+        } else if (itemClean.includes(q)) {
+          containsMatches.push(item);
+        }
+      }
+
+      list = [...prefixMatches, ...containsMatches].slice(0, 16);
+      showAutocomplete = list.length > 0;
+      selectedSuggestionIndex = 0;
+    } else if (/^(FROM|JOIN|INTO|UPDATE|TABLE|DESC|DESCRIBE)$/.test(prevWord)) {
       list = tbItems;
+      showAutocomplete = tbItems.length > 0;
+      selectedSuggestionIndex = 0;
     } else if (/^(SELECT|WHERE|AND|OR|BY|SET|ON|HAVING|DISTINCT)$/.test(prevWord) || /,\s*$/.test(pre)) {
-      list = [{ t: '*', k: 'kw' }, ...clItems];
+      list = [{ t: '*', k: 'kw' }, ...clItems, ...AGG_ITEMS.slice(0, 6)];
+      showAutocomplete = list.length > 0;
+      selectedSuggestionIndex = 0;
     } else {
-      list = kwItems;
+      list = DQL_ITEMS.slice(0, 16);
+      showAutocomplete = false;
     }
 
     currentSuggestions = list;
+  }
+
+  function handleEditorKeyDown(e) {
+    if (showAutocomplete && currentSuggestions.length > 0) {
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        handleInsertChip(currentSuggestions[selectedSuggestionIndex || 0]);
+        showAutocomplete = false;
+      } else if (e.key === 'Escape') {
+        showAutocomplete = false;
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        selectedSuggestionIndex = (selectedSuggestionIndex + 1) % currentSuggestions.length;
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        selectedSuggestionIndex = (selectedSuggestionIndex - 1 + currentSuggestions.length) % currentSuggestions.length;
+      }
+    }
   }
 
   function insertText(t) {
@@ -263,6 +351,7 @@
       textareaEl.selectionStart = textareaEl.selectionEnd = s + t.length;
       textareaEl.focus();
       updateSuggestions();
+      updateAutocompletePosition();
       ensureCursorVisible();
       syncScroll();
     });
@@ -278,6 +367,7 @@
         textareaEl.selectionStart = textareaEl.selectionEnd = s;
         textareaEl.focus();
         updateSuggestions();
+        updateAutocompletePosition();
         ensureCursorVisible();
         syncScroll();
       });
@@ -287,6 +377,7 @@
         textareaEl.selectionStart = textareaEl.selectionEnd = s - 1;
         textareaEl.focus();
         updateSuggestions();
+        updateAutocompletePosition();
         ensureCursorVisible();
         syncScroll();
       });
@@ -337,12 +428,14 @@
     const wLen = m ? m[0].length : 0;
 
     code = code.slice(0, s - wLen) + toInsert + code.slice(e);
+    showAutocomplete = false;
     tick().then(() => {
       // Place caret inside parentheses for functions: FUNC(|)
       const newPos = isFunc ? s - wLen + text.length : s - wLen + toInsert.length;
       textareaEl.selectionStart = textareaEl.selectionEnd = newPos;
       textareaEl.focus();
       updateSuggestions();
+      updateAutocompletePosition();
       ensureCursorVisible();
       syncScroll();
     });
@@ -536,6 +629,7 @@
           textareaEl.focus();
         }
         updateSuggestions();
+        updateAutocompletePosition();
         ensureCursorVisible();
         syncScroll();
       });
@@ -744,6 +838,12 @@
       const target = event.target;
       if (target && !target.closest('.menu-dropdown-wrap')) {
         showViewMenu = false;
+      }
+    }
+    if (showAutocomplete) {
+      const target = event.target;
+      if (target && !target.closest('.autocomplete-popup') && !target.closest('.ta')) {
+        showAutocomplete = false;
       }
     }
   }
@@ -1064,6 +1164,7 @@
                 {#each SQL_CATEGORIES as cat}
                   <button 
                     class="cat-tab-btn" 
+                    class:auto-tab={cat.id === 'auto'}
                     class:active={selectedCategory === cat.id}
                     on:click={() => selectedCategory = cat.id}
                   >
@@ -1123,12 +1224,41 @@
                   spellcheck="false"
                   autocapitalize="off"
                   autocorrect="off"
-                  on:scroll={syncScroll}
-                  on:input={() => { updateSuggestions(); syncScroll(); }}
-                  on:click={() => { updateSuggestions(); ensureCursorVisible(); }}
-                  on:keyup={() => { updateSuggestions(); ensureCursorVisible(); }}
-                  on:pointerup={() => { updateSuggestions(); ensureCursorVisible(); }}
+                  on:scroll={() => { syncScroll(); updateAutocompletePosition(); }}
+                  on:input={() => { updateSuggestions(); updateAutocompletePosition(); syncScroll(); }}
+                  on:click={() => { updateSuggestions(); updateAutocompletePosition(); ensureCursorVisible(); }}
+                  on:keyup={() => { updateSuggestions(); updateAutocompletePosition(); ensureCursorVisible(); }}
+                  on:keydown={handleEditorKeyDown}
+                  on:pointerup={() => { updateSuggestions(); updateAutocompletePosition(); ensureCursorVisible(); }}
                 ></textarea>
+
+                <!-- Floating Autocomplete Popup Widget -->
+                {#if showAutocomplete && currentSuggestions.length > 0}
+                  <div 
+                    class="autocomplete-popup" 
+                    style="top: {autocompletePos.top}px; left: {autocompletePos.left}px;"
+                  >
+                    <div class="ac-header">
+                      <span>⚡ Suggestions ({currentSuggestions.length})</span>
+                      <button class="ac-close" on:click|stopPropagation={() => showAutocomplete = false}>✕</button>
+                    </div>
+                    <div class="ac-list">
+                      {#each currentSuggestions as item, idx}
+                        <button 
+                          class="ac-item"
+                          class:active={idx === selectedSuggestionIndex}
+                          on:click|stopPropagation={() => { handleInsertChip(item); showAutocomplete = false; }}
+                        >
+                          <span class="ac-badge {item.k}">{item.k === 'tb' ? 'TABLE' : item.k === 'cl' ? 'COL' : item.k === 'fn' ? 'FUNC' : 'SQL'}</span>
+                          <span class="ac-text">{item.t}</span>
+                          {#if item.badge}
+                            <span class="ac-type">{item.badge}</span>
+                          {/if}
+                        </button>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
               </div>
             </div>
 
@@ -1276,6 +1406,7 @@
                 {#each SQL_CATEGORIES as cat}
                   <button 
                     class="cat-tab-btn" 
+                    class:auto-tab={cat.id === 'auto'}
                     class:active={selectedCategory === cat.id}
                     on:click={() => selectedCategory = cat.id}
                   >
@@ -1335,12 +1466,41 @@
                   spellcheck="false"
                   autocapitalize="off"
                   autocorrect="off"
-                  on:scroll={syncScroll}
-                  on:input={() => { updateSuggestions(); syncScroll(); }}
-                  on:click={() => { updateSuggestions(); ensureCursorVisible(); }}
-                  on:keyup={() => { updateSuggestions(); ensureCursorVisible(); }}
-                  on:pointerup={() => { updateSuggestions(); ensureCursorVisible(); }}
+                  on:scroll={() => { syncScroll(); updateAutocompletePosition(); }}
+                  on:input={() => { updateSuggestions(); updateAutocompletePosition(); syncScroll(); }}
+                  on:click={() => { updateSuggestions(); updateAutocompletePosition(); ensureCursorVisible(); }}
+                  on:keyup={() => { updateSuggestions(); updateAutocompletePosition(); ensureCursorVisible(); }}
+                  on:keydown={handleEditorKeyDown}
+                  on:pointerup={() => { updateSuggestions(); updateAutocompletePosition(); ensureCursorVisible(); }}
                 ></textarea>
+
+                <!-- Floating Autocomplete Popup Widget -->
+                {#if showAutocomplete && currentSuggestions.length > 0}
+                  <div 
+                    class="autocomplete-popup" 
+                    style="top: {autocompletePos.top}px; left: {autocompletePos.left}px;"
+                  >
+                    <div class="ac-header">
+                      <span>⚡ Suggestions ({currentSuggestions.length})</span>
+                      <button class="ac-close" on:click|stopPropagation={() => showAutocomplete = false}>✕</button>
+                    </div>
+                    <div class="ac-list">
+                      {#each currentSuggestions as item, idx}
+                        <button 
+                          class="ac-item"
+                          class:active={idx === selectedSuggestionIndex}
+                          on:click|stopPropagation={() => { handleInsertChip(item); showAutocomplete = false; }}
+                        >
+                          <span class="ac-badge {item.k}">{item.k === 'tb' ? 'TABLE' : item.k === 'cl' ? 'COL' : item.k === 'fn' ? 'FUNC' : 'SQL'}</span>
+                          <span class="ac-text">{item.t}</span>
+                          {#if item.badge}
+                            <span class="ac-type">{item.badge}</span>
+                          {/if}
+                        </button>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
               </div>
             </div>
           </div>
@@ -2289,6 +2449,10 @@
     justify-content: center;
   }
 
+  .cat-tab-btn.auto-tab {
+    font-weight: 800;
+  }
+
   .cat-tab-btn.active {
     background: var(--ac);
     color: #ffffff;
@@ -2655,6 +2819,134 @@
 
   .ta::selection {
     background: rgba(29, 78, 216, 0.28);
+  }
+
+  /* FLOATING AUTOCOMPLETE POPUP (Monaco-like for Mobile) */
+  .autocomplete-popup {
+    position: absolute;
+    min-width: 200px;
+    max-width: 280px;
+    max-height: 180px;
+    background: var(--bg);
+    border: 1px solid var(--bd);
+    border-radius: 8px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2);
+    z-index: 2000;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-sizing: border-box;
+    animation: acPopFade 0.12s ease-out;
+  }
+
+  @keyframes acPopFade {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .ac-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 3px 8px;
+    background: var(--pn);
+    border-bottom: 1px solid var(--bd);
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--mu);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+  }
+
+  .ac-close {
+    background: transparent;
+    border: none;
+    color: var(--mu);
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+  }
+
+  .ac-close:hover {
+    color: var(--fg);
+  }
+
+  .ac-list {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    padding: 3px;
+    gap: 2px;
+    max-height: 145px;
+  }
+
+  .ac-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--fg);
+    font: 600 12px 'Courier New', monospace;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.1s;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .ac-item:hover, .ac-item:active, .ac-item.active {
+    background: var(--acbg);
+    border-color: var(--acbd);
+  }
+
+  .ac-badge {
+    font-size: 9px;
+    font-weight: 800;
+    font-family: 'Inter', sans-serif;
+    padding: 1px 4px;
+    border-radius: 3px;
+    flex-shrink: 0;
+    letter-spacing: 0.04em;
+  }
+
+  .ac-badge.tb {
+    background: #059669;
+    color: #fff;
+  }
+
+  .ac-badge.cl {
+    background: #2563eb;
+    color: #fff;
+  }
+
+  .ac-badge.kw {
+    background: #7c3aed;
+    color: #fff;
+  }
+
+  .ac-badge.fn {
+    background: #d97706;
+    color: #fff;
+  }
+
+  .ac-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .ac-type {
+    font-size: 9px;
+    color: var(--mu);
+    margin-left: auto;
+    font-family: 'Inter', sans-serif;
   }
 
   .hl :global(b) { font-weight: 700; color: var(--kw); }
