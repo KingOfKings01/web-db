@@ -14,6 +14,13 @@
   let isPanning = false;
   let panStart = { x: 0, y: 0 };
   let panPointerId = null;
+  let isMobile = false;
+
+  function handleResize() {
+    if (typeof window !== 'undefined') {
+      isMobile = window.innerWidth <= 1024 || window.innerHeight <= 600;
+    }
+  }
 
   let searchTerm = '';
   let hoveredValue = null;
@@ -272,6 +279,7 @@
 
   // Card Header Dragging with Pointer Events & Pointer Capture
   function startCardDrag(e, tableName, headerEl) {
+    if (isMobile) return;
     if (e.button !== 0) return;
     if (e.target.closest('.card-controls')) return;
     e.preventDefault();
@@ -347,6 +355,7 @@
 
   // Canvas Panning via background drag or Pan tool
   function startPan(e) {
+    if (isMobile) return;
     if (e.button !== 0) return;
     if (activeTool === 'pan' || e.target === viewport || e.target === workspace || e.target.classList?.contains('drawing-svg-layer')) {
       if (activeTool !== 'marker' && activeTool !== 'arrow' && activeTool !== 'eraser') {
@@ -594,199 +603,214 @@
       console.error('Failed to restore table canvas state', error);
     }
     canvasStateLoaded = true;
+    handleResize();
+    window.addEventListener('resize', handleResize);
     window.addEventListener('keydown', handleKeydown);
   });
 
   onDestroy(() => {
+    window.removeEventListener('resize', handleResize);
     window.removeEventListener('keydown', handleKeydown);
   });
 </script>
 
-<div class="table-canvas-modal" class:visible={visible}>
+<div class="table-canvas-modal" class:visible={visible} class:is-mobile-canvas={isMobile}>
   <div class="table-canvas-container">
     <!-- Top Control Bar -->
     <div class="canvas-toolbar">
-      <div class="canvas-title">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-          <line x1="3" y1="9" x2="21" y2="9"></line>
-          <line x1="9" y1="21" x2="9" y2="9"></line>
-        </svg>
-        <span>Database Visual Board &amp; Table Canvas</span>
-      </div>
-
-      <!-- Drawing & Navigation Tools -->
-      <div class="canvas-toolbox">
-        <div class="tool-group">
-          <button
-            class="tool-btn"
-            class:active={activeTool === 'select'}
-            on:click={() => (activeTool = 'select')}
-            title="Select & Move Tables (V)"
-          >
-            <span>👆</span>
-            <small>Select</small>
-          </button>
-          <button
-            class="tool-btn"
-            class:active={activeTool === 'pan'}
-            on:click={() => (activeTool = 'pan')}
-            title="Hand / Pan Canvas (H)"
-          >
-            <span>✋</span>
-            <small>Pan</small>
-          </button>
-          <button
-            class="tool-btn"
-            class:active={activeTool === 'marker'}
-            on:click={() => (activeTool = 'marker')}
-            title="Freehand Marker (M)"
-          >
-            <span>✏️</span>
-            <small>Marker</small>
-          </button>
-          <button
-            class="tool-btn"
-            class:active={activeTool === 'arrow'}
-            on:click={() => (activeTool = 'arrow')}
-            title="Draw Arrow (A)"
-          >
-            <span>↗️</span>
-            <small>Arrow</small>
-          </button>
-          <button
-            class="tool-btn"
-            class:active={activeTool === 'eraser'}
-            on:click={() => (activeTool = 'eraser')}
-            title="Eraser (E)"
-          >
-            <span>🧹</span>
-            <small>Eraser</small>
-          </button>
-        </div>
-
-        <!-- Undo / Redo Actions -->
-        <div class="tool-group history-group">
-          <button
-            class="tool-btn"
-            disabled={undoStack.length === 0}
-            on:click={handleUndo}
-            title="Undo (Ctrl+Z)"
-          >
-            <span style="font-size: 15px; font-weight: bold;">↶</span>
-            <small>Undo</small>
-          </button>
-          <button
-            class="tool-btn"
-            disabled={redoStack.length === 0}
-            on:click={handleRedo}
-            title="Redo (Ctrl+Y)"
-          >
-            <span style="font-size: 15px; font-weight: bold;">↷</span>
-            <small>Redo</small>
-          </button>
-        </div>
-
-        <!-- Color & Width Options for Marker/Arrow -->
-        {#if activeTool === 'marker' || activeTool === 'arrow'}
-          <div class="color-picker-group">
-            {#each COLOR_PALETTE as col}
-              <button
-                class="color-dot"
-                style="background: {col.hex};"
-                class:active={selectedColor === col.hex}
-                on:click={() => selectColor(col)}
-                title={col.name}
-              ></button>
-            {/each}
-
-            <select bind:value={strokeWidth} class="stroke-select" title="Stroke thickness">
-              <option value={2}>2px</option>
-              <option value={3}>3px</option>
-              <option value={5}>5px</option>
-            </select>
-          </div>
-        {/if}
-
-        {#if drawings.length > 0}
-          <button class="canvas-btn-sm" on:click={clearAllDrawings} title="Clear all drawings">
-            Clear ({drawings.length})
-          </button>
-        {/if}
-      </div>
-
-      <!-- Right Actions: Table Picker, Search, Zoom, Close -->
-      <div class="canvas-actions">
-        <!-- Tables Visible / Hidden Dropdown -->
-        <div class="table-picker-container">
-          <button
-            class="canvas-btn table-picker-btn"
-            class:has-hidden={hiddenTableNames.length > 0}
-            on:click={() => (showTablePicker = !showTablePicker)}
-            title="Manage tables visible on canvas"
-          >
-            <span>📋 Tables ({canvasTables.length}/{allAvailableTables.length})</span>
-            {#if hiddenTableNames.length > 0}
-              <span class="hidden-pill">+{hiddenTableNames.length} hidden</span>
-            {/if}
-            <span class="chevron">▾</span>
-          </button>
-
-          {#if showTablePicker}
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="table-picker-dropdown">
-              <div class="picker-header">
-                <strong>Manage Table Cards</strong>
-                {#if hiddenTableNames.length > 0}
-                  <button class="picker-action-link" on:click={restoreAllTables}>Show All</button>
-                {/if}
-              </div>
-              <div class="picker-list">
-                {#each allAvailableTables as [tableName, table]}
-                  {@const isHidden = hiddenTables.has(tableName)}
-                  <div class="picker-item">
-                    <span class="picker-table-name">
-                      {capitalize(tableName)}
-                      {#if table.isQueryResult}<small class="query-badge">Query</small>{/if}
-                    </span>
-                    {#if isHidden}
-                      <button class="btn-restore-table" on:click={() => restoreTable(tableName)}>
-                        + Add to Board
-                      </button>
-                    {:else}
-                      <button class="btn-hide-table" on:click={() => removeTableFromCanvas(tableName, table.isQueryResult)}>
-                        Hide ✕
-                      </button>
-                    {/if}
-                  </div>
-                {/each}
-              </div>
-            </div>
-          {/if}
-        </div>
-
-        <div class="canvas-search-box">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="11" cy="11" r="8"></circle>
-            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+      <!-- Row 1: Modal Header (Title + Always Visible Close Button) -->
+      <div class="canvas-top-bar">
+        <div class="canvas-title">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="3" y1="9" x2="21" y2="9"></line>
+            <line x1="9" y1="21" x2="9" y2="9"></line>
           </svg>
-          <input type="text" bind:value={searchTerm} placeholder="Search data..." />
+          <span class="canvas-title-full">Database Visual Board &amp; Table Canvas</span>
+          <span class="canvas-title-short">Tables ({canvasTables.length})</span>
         </div>
 
-        <div class="canvas-zoom-controls">
-          <button class="canvas-btn icon-only" on:click={() => setZoom(zoomLevel - 0.15)} title="Zoom Out">-</button>
-          <span>{Math.round(zoomLevel * 100)}%</span>
-          <button class="canvas-btn icon-only" on:click={() => setZoom(zoomLevel + 0.15)} title="Zoom In">+</button>
-          <button class="canvas-btn icon-only" on:click={resetView} title="Reset View">⟲</button>
-        </div>
-
+        <!-- ALWAYS VISIBLE CLOSE BUTTON PINNED TO THE TOP RIGHT -->
         <button class="canvas-btn canvas-btn-close" on:click={handleClose} title="Return to SQL Editor (Esc)">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <line x1="18" y1="6" x2="6" y2="18"></line>
             <line x1="6" y1="6" x2="18" y2="18"></line>
           </svg>
           <span>Close</span>
         </button>
+      </div>
+
+      <!-- Row 2: Secondary Controls (Tools, Table Picker, Search, Zoom) -->
+      <div class="canvas-controls-row">
+        <!-- Drawing & Navigation Tools (desktop only) -->
+        {#if !isMobile}
+          <div class="canvas-toolbox">
+            <div class="tool-group">
+              <button
+                class="tool-btn"
+                class:active={activeTool === 'select'}
+                on:click={() => (activeTool = 'select')}
+                title="Select & Move Tables (V)"
+              >
+                <span>👆</span>
+                <small>Select</small>
+              </button>
+              <button
+                class="tool-btn"
+                class:active={activeTool === 'pan'}
+                on:click={() => (activeTool = 'pan')}
+                title="Hand / Pan Canvas (H)"
+              >
+                <span>✋</span>
+                <small>Pan</small>
+              </button>
+              <button
+                class="tool-btn"
+                class:active={activeTool === 'marker'}
+                on:click={() => (activeTool = 'marker')}
+                title="Freehand Marker (M)"
+              >
+                <span>✏️</span>
+                <small>Marker</small>
+              </button>
+              <button
+                class="tool-btn"
+                class:active={activeTool === 'arrow'}
+                on:click={() => (activeTool = 'arrow')}
+                title="Draw Arrow (A)"
+              >
+                <span>↗️</span>
+                <small>Arrow</small>
+              </button>
+              <button
+                class="tool-btn"
+                class:active={activeTool === 'eraser'}
+                on:click={() => (activeTool = 'eraser')}
+                title="Eraser (E)"
+              >
+                <span>🧹</span>
+                <small>Eraser</small>
+              </button>
+            </div>
+
+            <!-- Undo / Redo Actions -->
+            <div class="tool-group history-group">
+              <button
+                class="tool-btn"
+                disabled={undoStack.length === 0}
+                on:click={handleUndo}
+                title="Undo (Ctrl+Z)"
+              >
+                <span style="font-size: 15px; font-weight: bold;">↶</span>
+                <small>Undo</small>
+              </button>
+              <button
+                class="tool-btn"
+                disabled={redoStack.length === 0}
+                on:click={handleRedo}
+                title="Redo (Ctrl+Y)"
+              >
+                <span style="font-size: 15px; font-weight: bold;">↷</span>
+                <small>Redo</small>
+              </button>
+            </div>
+
+            <!-- Color & Width Options for Marker/Arrow -->
+            {#if activeTool === 'marker' || activeTool === 'arrow'}
+              <div class="color-picker-group">
+                {#each COLOR_PALETTE as col}
+                  <button
+                    class="color-dot"
+                    style="background: {col.hex};"
+                    class:active={selectedColor === col.hex}
+                    on:click={() => selectColor(col)}
+                    title={col.name}
+                  ></button>
+                {/each}
+
+                <select bind:value={strokeWidth} class="stroke-select" title="Stroke thickness">
+                  <option value={2}>2px</option>
+                  <option value={3}>3px</option>
+                  <option value={5}>5px</option>
+                </select>
+              </div>
+            {/if}
+
+            {#if drawings.length > 0}
+              <button class="canvas-btn-sm" on:click={clearAllDrawings} title="Clear all drawings">
+                Clear ({drawings.length})
+              </button>
+            {/if}
+          </div>
+        {/if}
+
+        <!-- Actions: Table Picker, Search, Zoom -->
+        <div class="canvas-actions">
+          <!-- Tables Visible / Hidden Dropdown -->
+          <div class="table-picker-container">
+            <button
+              class="canvas-btn table-picker-btn"
+              class:has-hidden={hiddenTableNames.length > 0}
+              on:click={() => (showTablePicker = !showTablePicker)}
+              title="Manage tables visible on canvas"
+            >
+              <span>📋 Tables ({canvasTables.length}/{allAvailableTables.length})</span>
+              {#if hiddenTableNames.length > 0}
+                <span class="hidden-pill">+{hiddenTableNames.length} hidden</span>
+              {/if}
+              <span class="chevron">▾</span>
+            </button>
+
+            {#if showTablePicker}
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div class="table-picker-dropdown">
+                <div class="picker-header">
+                  <strong>Manage Table Cards</strong>
+                  {#if hiddenTableNames.length > 0}
+                    <button class="picker-action-link" on:click={restoreAllTables}>Show All</button>
+                  {/if}
+                </div>
+                <div class="picker-list">
+                  {#each allAvailableTables as [tableName, table]}
+                    {@const isHidden = hiddenTables.has(tableName)}
+                    <div class="picker-item">
+                      <span class="picker-table-name">
+                        {capitalize(tableName)}
+                        {#if table.isQueryResult}<small class="query-badge">Query</small>{/if}
+                      </span>
+                      {#if isHidden}
+                        <button class="btn-restore-table" on:click={() => restoreTable(tableName)}>
+                          + Add to Board
+                        </button>
+                      {:else}
+                        <button class="btn-hide-table" on:click={() => removeTableFromCanvas(tableName, table.isQueryResult)}>
+                          Hide ✕
+                        </button>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          </div>
+
+          <div class="canvas-search-box">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            <input type="text" bind:value={searchTerm} placeholder="Search data..." />
+          </div>
+
+          {#if !isMobile}
+            <div class="canvas-zoom-controls">
+              <button class="canvas-btn icon-only" on:click={() => setZoom(zoomLevel - 0.15)} title="Zoom Out">-</button>
+              <span>{Math.round(zoomLevel * 100)}%</span>
+              <button class="canvas-btn icon-only" on:click={() => setZoom(zoomLevel + 0.15)} title="Zoom In">+</button>
+              <button class="canvas-btn icon-only" on:click={resetView} title="Reset View">⟲</button>
+            </div>
+          {/if}
+        </div>
       </div>
     </div>
 
@@ -794,10 +818,10 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div 
       class="canvas-viewport" 
-      class:tool-pan={activeTool === 'pan'}
-      class:tool-marker={activeTool === 'marker'}
-      class:tool-arrow={activeTool === 'arrow'}
-      class:tool-eraser={activeTool === 'eraser'}
+      class:tool-pan={activeTool === 'pan' && !isMobile}
+      class:tool-marker={activeTool === 'marker' && !isMobile}
+      class:tool-arrow={activeTool === 'arrow' && !isMobile}
+      class:tool-eraser={activeTool === 'eraser' && !isMobile}
       bind:this={viewport}
       on:pointerdown={startPan}
       on:pointermove={onPanMove}
@@ -807,7 +831,7 @@
       <div 
         class="canvas-workspace" 
         bind:this={workspace}
-        style="transform: translate({panOffset.x}px, {panOffset.y}px) scale({zoomLevel});"
+        style={isMobile ? '' : `transform: translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomLevel});`}
       >
         <!-- Table Cards -->
         {#each canvasTables as [tableName, table]}
@@ -821,7 +845,7 @@
             class:is-pinned={isPin}
             class:is-query-result={table.isQueryResult}
             class:is-dragging={activeDrag && activeDrag.tableName === tableName}
-            style="left: {pos.x}px; top: {pos.y}px; z-index: {pos.zIndex};"
+            style={isMobile ? '' : `left: ${pos.x}px; top: ${pos.y}px; z-index: ${pos.zIndex};`}
             on:pointerdown={() => bringToFront(tableName)}
           >
             <div 
@@ -921,105 +945,254 @@
           </div>
         {/each}
 
-        <!-- Interactive SVG Drawing Overlay (Marker, Arrows, Eraser) -->
-        <svg
-          class="drawing-svg-layer"
-          class:interactive={activeTool === 'marker' || activeTool === 'arrow' || activeTool === 'eraser'}
-          on:pointerdown={onDrawingPointerDown}
-          on:pointermove={onDrawingPointerMove}
-          on:pointerup={onDrawingPointerUp}
-        >
-          <defs>
-            <marker id="arrowhead-red" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
-              <polygon points="0 0, 9 3.5, 0 7" fill="#ef4444" />
-            </marker>
-            <marker id="arrowhead-blue" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
-              <polygon points="0 0, 9 3.5, 0 7" fill="#3b82f6" />
-            </marker>
-            <marker id="arrowhead-green" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
-              <polygon points="0 0, 9 3.5, 0 7" fill="#10b981" />
-            </marker>
-            <marker id="arrowhead-amber" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
-              <polygon points="0 0, 9 3.5, 0 7" fill="#f59e0b" />
-            </marker>
-            <marker id="arrowhead-purple" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
-              <polygon points="0 0, 9 3.5, 0 7" fill="#a855f7" />
-            </marker>
-          </defs>
+        {#if !isMobile}
+          <!-- Interactive SVG Drawing Overlay (Marker, Arrows, Eraser) -->
+          <svg
+            class="drawing-svg-layer"
+            class:interactive={activeTool === 'marker' || activeTool === 'arrow' || activeTool === 'eraser'}
+            on:pointerdown={onDrawingPointerDown}
+            on:pointermove={onDrawingPointerMove}
+            on:pointerup={onDrawingPointerUp}
+          >
+            <defs>
+              <marker id="arrowhead-red" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+                <polygon points="0 0, 9 3.5, 0 7" fill="#ef4444" />
+              </marker>
+              <marker id="arrowhead-blue" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+                <polygon points="0 0, 9 3.5, 0 7" fill="#3b82f6" />
+              </marker>
+              <marker id="arrowhead-green" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+                <polygon points="0 0, 9 3.5, 0 7" fill="#10b981" />
+              </marker>
+              <marker id="arrowhead-amber" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+                <polygon points="0 0, 9 3.5, 0 7" fill="#f59e0b" />
+              </marker>
+              <marker id="arrowhead-purple" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+                <polygon points="0 0, 9 3.5, 0 7" fill="#a855f7" />
+              </marker>
+            </defs>
 
-          <!-- Render All Saved Drawings -->
-          {#each drawings as item (item.id)}
-            {#if item.type === 'path'}
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <!-- Render All Saved Drawings -->
+            {#each drawings as item (item.id)}
+              {#if item.type === 'path'}
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <path
+                  d={item.d}
+                  stroke={item.color}
+                  stroke-width={item.width}
+                  fill="none"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  class="drawing-stroke"
+                  class:erasable={activeTool === 'eraser'}
+                  on:pointerdown={() => deleteDrawing(item.id)}
+                />
+              {:else if item.type === 'arrow'}
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <line
+                  x1={item.x1}
+                  y1={item.y1}
+                  x2={item.x2}
+                  y2={item.y2}
+                  stroke={item.color}
+                  stroke-width={item.width}
+                  stroke-linecap="round"
+                  marker-end="url(#arrowhead-{item.colorName || 'red'})"
+                  class="drawing-arrow"
+                  class:erasable={activeTool === 'eraser'}
+                  on:pointerdown={() => deleteDrawing(item.id)}
+                />
+              {/if}
+            {/each}
+
+            <!-- In-progress Marker Stroke Preview -->
+            {#if currentPath}
               <path
-                d={item.d}
-                stroke={item.color}
-                stroke-width={item.width}
+                d={currentPath.d}
+                stroke={selectedColor}
+                stroke-width={strokeWidth}
                 fill="none"
                 stroke-linecap="round"
                 stroke-linejoin="round"
-                class="drawing-stroke"
-                class:erasable={activeTool === 'eraser'}
-                on:pointerdown={() => deleteDrawing(item.id)}
-              />
-            {:else if item.type === 'arrow'}
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <line
-                x1={item.x1}
-                y1={item.y1}
-                x2={item.x2}
-                y2={item.y2}
-                stroke={item.color}
-                stroke-width={item.width}
-                stroke-linecap="round"
-                marker-end="url(#arrowhead-{item.colorName || 'red'})"
-                class="drawing-arrow"
-                class:erasable={activeTool === 'eraser'}
-                on:pointerdown={() => deleteDrawing(item.id)}
+                opacity="0.9"
               />
             {/if}
-          {/each}
 
-          <!-- In-progress Marker Stroke Preview -->
-          {#if currentPath}
-            <path
-              d={currentPath.d}
-              stroke={selectedColor}
-              stroke-width={strokeWidth}
-              fill="none"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              opacity="0.9"
-            />
-          {/if}
-
-          <!-- In-progress Arrow Preview -->
-          {#if currentArrow}
-            <line
-              x1={currentArrow.x1}
-              y1={currentArrow.y1}
-              x2={currentArrow.x2}
-              y2={currentArrow.y2}
-              stroke={selectedColor}
-              stroke-width={strokeWidth}
-              stroke-linecap="round"
-              marker-end="url(#arrowhead-{selectedColorName})"
-              opacity="0.9"
-            />
-          {/if}
-        </svg>
+            <!-- In-progress Arrow Preview -->
+            {#if currentArrow}
+              <line
+                x1={currentArrow.x1}
+                y1={currentArrow.y1}
+                x2={currentArrow.x2}
+                y2={currentArrow.y2}
+                stroke={selectedColor}
+                stroke-width={strokeWidth}
+                stroke-linecap="round"
+                marker-end="url(#arrowhead-{selectedColorName})"
+                opacity="0.9"
+              />
+            {/if}
+          </svg>
+        {/if}
       </div>
     </div>
 
-    <!-- Bottom Status / Navigation Footer -->
-    <div class="canvas-footer-hint">
-      <span>💡 <strong>Canvas Controls:</strong> <strong>Scroll / Drag</strong> to pan in all directions. Use <strong>✕ Remove</strong> on any card to clean up your board. Use <strong>✏️ Marker</strong> or <strong>↗️ Arrow</strong> to draw notes &amp; relationships!</span>
-      <span class="active-tool-indicator">Tool: <strong>{activeTool.toUpperCase()}</strong></span>
-    </div>
+    {#if !isMobile}
+      <!-- Bottom Status / Navigation Footer -->
+      <div class="canvas-footer-hint">
+        <span>💡 <strong>Canvas Controls:</strong> <strong>Scroll / Drag</strong> to pan in all directions. Use <strong>✕ Remove</strong> on any card to clean up your board. Use <strong>✏️ Marker</strong> or <strong>↗️ Arrow</strong> to draw notes &amp; relationships!</span>
+        <span class="active-tool-indicator">Tool: <strong>{activeTool.toUpperCase()}</strong></span>
+      </div>
+    {/if}
   </div>
 </div>
 
 <style>
+  .canvas-top-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+
+  .canvas-controls-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .canvas-title-short {
+    display: none;
+  }
+
+  .canvas-title-full {
+    display: inline;
+  }
+
+  :global(.is-mobile-canvas .canvas-toolbar) {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    height: auto !important;
+    min-height: 44px !important;
+    padding: 6px 10px !important;
+    gap: 6px !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+  }
+
+  :global(.is-mobile-canvas .canvas-top-bar) {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    width: 100% !important;
+    flex-shrink: 0 !important;
+  }
+
+  :global(.is-mobile-canvas .canvas-title-full) {
+    display: none !important;
+  }
+
+  :global(.is-mobile-canvas .canvas-title-short) {
+    display: inline !important;
+    font-size: 13px !important;
+    font-weight: 700 !important;
+  }
+
+  :global(.is-mobile-canvas .canvas-btn-close) {
+    background-color: #ef4444 !important;
+    color: #ffffff !important;
+    border: 1px solid #dc2626 !important;
+    font-weight: 700 !important;
+    padding: 6px 14px !important;
+    border-radius: 6px !important;
+    font-size: 13px !important;
+    flex-shrink: 0 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 4px !important;
+    box-shadow: 0 2px 6px rgba(239, 68, 68, 0.4) !important;
+  }
+
+  :global(.is-mobile-canvas .canvas-controls-row) {
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+  }
+
+  :global(.is-mobile-canvas .canvas-actions) {
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    width: 100% !important;
+  }
+
+  :global(.is-mobile-canvas .canvas-search-box) {
+    flex: 1 !important;
+    min-width: 0 !important;
+  }
+
+  :global(.is-mobile-canvas .canvas-search-box input) {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  :global(.is-mobile-canvas .table-canvas-container) {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    border-radius: 0 !important;
+    border: none !important;
+  }
+
+  :global(.is-mobile-canvas .canvas-viewport) {
+    flex: 1 !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    -webkit-overflow-scrolling: touch !important;
+    touch-action: pan-y !important;
+  }
+
+  :global(.is-mobile-canvas .canvas-workspace) {
+    position: relative !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    height: auto !important;
+    min-height: 100% !important;
+    transform: none !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 14px !important;
+    padding: 10px 8px 60px 8px !important;
+    box-sizing: border-box !important;
+  }
+
+  :global(.is-mobile-canvas .draggable-table-card) {
+    position: relative !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    margin: 0 !important;
+    box-sizing: border-box !important;
+  }
+
+  :global(.is-mobile-canvas .table-data-wrapper) {
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    touch-action: pan-x !important;
+    max-height: 280px !important;
+    min-width: 0 !important;
+  }
+
   .canvas-toolbox {
     display: flex;
     align-items: center;

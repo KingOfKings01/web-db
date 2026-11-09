@@ -9,6 +9,7 @@
   import OutputView from './components/OutputView.svelte';
   import AvailableTablesSidebar from './components/AvailableTablesSidebar.svelte';
   import TableCanvasModal from './components/TableCanvasModal.svelte';
+  import MobileKeyboardStudio from './components/MobileKeyboardStudio.svelte';
 
   const DEFAULT_QUERY = `-- Demo Queries (Insert & Select)
 SELECT name, course_id FROM students;
@@ -25,6 +26,45 @@ SELECT * FROM courses;`;
   let isOutputCollapsed = false;
   let leftSidebarWidth = 250;
   let rightSidebarWidth = 320;
+
+  const VIEW_MODE_STORAGE_KEY = 'ORACLE_STUDIO_VIEW_MODE_V1';
+  let currentViewMode = 'desktop'; // 'desktop' | 'vertical' | 'landscape'
+  $: activeMobile = currentViewMode === 'vertical' || currentViewMode === 'landscape';
+
+  function handleSwitchView(mode) {
+    if (mode === 'vertical' || mode === 'landscape' || mode === 'desktop') {
+      currentViewMode = mode;
+      try {
+        localStorage.setItem(VIEW_MODE_STORAGE_KEY, mode);
+      } catch (_) {}
+
+      // Default to fullscreen when switching into mobile mode
+      if (mode === 'vertical' || mode === 'landscape') {
+        try {
+          const docEl = document.documentElement;
+          if (!document.fullscreenElement) {
+            if (docEl.requestFullscreen) {
+              docEl.requestFullscreen().catch(() => {});
+            } else if (docEl.webkitRequestFullscreen) {
+              docEl.webkitRequestFullscreen();
+            }
+          }
+        } catch (_) {}
+      }
+    }
+  }
+
+  function handleToggleMobileView(mode) {
+    if (mode && typeof mode === 'string') {
+      handleSwitchView(mode);
+    } else {
+      handleSwitchView(activeMobile ? 'desktop' : 'vertical');
+    }
+  }
+
+  function handleExitMobile() {
+    handleSwitchView('desktop');
+  }
 
   let editorComponent;
   let tableCanvasComponent;
@@ -291,8 +331,26 @@ SELECT * FROM courses;`;
       runQueryScript(editorCode);
     }
 
-    clampSidebarWidths();
-    window.addEventListener('resize', clampSidebarWidths);
+    try {
+      const savedView = localStorage.getItem(VIEW_MODE_STORAGE_KEY);
+      if (savedView === 'vertical' || savedView === 'landscape' || savedView === 'desktop') {
+        currentViewMode = savedView;
+      } else {
+        if (window.innerWidth <= 768) {
+          currentViewMode = window.innerWidth > window.innerHeight ? 'landscape' : 'vertical';
+          localStorage.setItem(VIEW_MODE_STORAGE_KEY, currentViewMode);
+        } else {
+          currentViewMode = 'desktop';
+        }
+      }
+    } catch (_) {}
+
+    function checkViewport() {
+      clampSidebarWidths();
+    }
+
+    checkViewport();
+    window.addEventListener('resize', checkViewport);
     window.addEventListener('mouseup', stopSplitterResize);
     window.addEventListener('pointerup', stopSplitterResize);
     window.addEventListener('blur', stopSplitterResize);
@@ -300,7 +358,7 @@ SELECT * FROM courses;`;
     window.addEventListener('blur', stopSidebarResize);
 
     return () => {
-      window.removeEventListener('resize', clampSidebarWidths);
+      window.removeEventListener('resize', checkViewport);
       window.removeEventListener('mouseup', stopSplitterResize);
       window.removeEventListener('pointerup', stopSplitterResize);
       window.removeEventListener('blur', stopSplitterResize);
@@ -310,15 +368,30 @@ SELECT * FROM courses;`;
   });
 </script>
 
-<div class="app-container {theme}">
-  <Header 
+{#if activeMobile}
+  <MobileKeyboardStudio
+    bind:code={editorCode}
     {theme}
-    onOpenCanvas={() => isCanvasOpen = true}
-    onResetDb={handleResetDb}
+    layoutMode={currentViewMode}
+    onRun={runQueryScript}
+    {queryResults}
+    {queryStatus}
     onToggleTheme={handleToggleTheme}
+    onExitMobile={handleExitMobile}
+    onSwitchLayout={(mode) => handleSwitchView(mode)}
   />
+{:else}
+  <div class="app-container {theme}">
+    <Header 
+      {theme}
+      isMobileView={false}
+      onSwitchView={handleSwitchView}
+      onOpenCanvas={() => isCanvasOpen = true}
+      onResetDb={handleResetDb}
+      onToggleTheme={handleToggleTheme}
+    />
 
-  <main class="app-body" bind:this={appBodyEl}>
+    <main class="app-body" bind:this={appBodyEl}>
     <SchemaSidebar 
       collapsed={isLeftCollapsed}
       width={leftSidebarWidth}
@@ -405,3 +478,4 @@ SELECT * FROM courses;`;
   />
 
 </div>
+{/if}
