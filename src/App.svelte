@@ -4,12 +4,13 @@
   import { comparisonTablesStore, oracleDb } from './lib/db-store.js';
 
   import Header from './components/Header.svelte';
-  import SchemaSidebar from './components/SchemaSidebar.svelte';
+  import ConnectionsSidebar from './components/ConnectionsSidebar.svelte';
   import SqlEditor from './components/SqlEditor.svelte';
   import OutputView from './components/OutputView.svelte';
   import AvailableTablesSidebar from './components/AvailableTablesSidebar.svelte';
   import TableCanvasModal from './components/TableCanvasModal.svelte';
   import MobileKeyboardStudio from './components/MobileKeyboardStudio.svelte';
+  import NewConnectionModal from './components/NewConnectionModal.svelte';
 
   const DEFAULT_QUERY = `-- Demo Queries (Insert & Select)
 SELECT name, course_id FROM students;
@@ -23,8 +24,9 @@ SELECT * FROM courses;`;
   let isLeftCollapsed = false;
   let isRightCollapsed = false;
   let isCanvasOpen = false;
+  let isNewConnectionModalOpen = false;
   let isOutputCollapsed = false;
-  let leftSidebarWidth = 250;
+  let leftSidebarWidth = 260;
   let rightSidebarWidth = 320;
 
   const VIEW_MODE_STORAGE_KEY = 'ORACLE_STUDIO_VIEW_MODE_V1';
@@ -197,6 +199,27 @@ SELECT * FROM courses;`;
   dept_name VARCHAR2(30) NOT NULL
 );`;
     handleInsertText(template);
+  }
+
+  function handleCreateAndConnect(connInfo) {
+    try {
+      const { name, username, password } = connInfo;
+      const databases = oracleDb.getDatabases();
+      const key = name.toUpperCase().trim();
+      if (!databases[key]) {
+        oracleDb.createDatabase(name, username, password);
+      }
+      const res = oracleDb.connectDatabase(name, username, password);
+      queryStatus = res.message || `Connected to ${name}.`;
+      queryResults = [{
+        type: 'DDL',
+        command: `CONNECT ${username}@${name}`,
+        message: res.message || `Connected to ${name}.`
+      }];
+      isNewConnectionModalOpen = false;
+    } catch (err) {
+      alert(err.message || String(err));
+    }
   }
 
   // Vertical Splitter Resizing with Pointer Capture & e.buttons safety
@@ -392,12 +415,12 @@ SELECT * FROM courses;`;
     />
 
     <main class="app-body" bind:this={appBodyEl}>
-    <SchemaSidebar 
+    <ConnectionsSidebar 
       collapsed={isLeftCollapsed}
       width={leftSidebarWidth}
       onToggleCollapse={() => isLeftCollapsed = !isLeftCollapsed}
       onInsertText={handleInsertText}
-      onCreateTableTemplate={handleCreateTableTemplate}
+      onOpenNewConnection={() => isNewConnectionModalOpen = true}
     />
 
     {#if !isLeftCollapsed}
@@ -475,6 +498,12 @@ SELECT * FROM courses;`;
     bind:this={tableCanvasComponent}
     visible={isCanvasOpen}
     onClose={() => isCanvasOpen = false}
+  />
+
+  <NewConnectionModal
+    visible={isNewConnectionModalOpen}
+    onClose={() => isNewConnectionModalOpen = false}
+    onConnect={handleCreateAndConnect}
   />
 
 </div>

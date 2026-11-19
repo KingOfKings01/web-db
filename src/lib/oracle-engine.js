@@ -51,8 +51,8 @@ const DEFAULT_DATABASE = {
     }
   },
   views: {},
-  currentContainer: 'FREEPDB1',
-  currentUser: 'SYS',
+  currentContainer: 'SQL_CLASS',
+  currentUser: 'STUDENT',
   users: {
     SYS: {
       username: 'SYS',
@@ -102,6 +102,30 @@ const DEFAULT_DATABASE = {
   tabPrivileges: {}
 };
 
+const DEFAULT_DATABASES = {
+  'SQL_CLASS': {
+    name: 'sql_class',
+    username: 'STUDENT',
+    password: 'password',
+    tables: JSON.parse(JSON.stringify(DEFAULT_DATABASE.tables)),
+    views: {},
+    connected: true
+  },
+  'ORACLE26': {
+    name: 'Oracle26',
+    username: 'SYSTEM',
+    password: 'manager',
+    tables: {
+      DUAL: JSON.parse(JSON.stringify(DEFAULT_DATABASE.tables.DUAL))
+    },
+    views: {},
+    connected: false
+  }
+};
+
+DEFAULT_DATABASE.databases = DEFAULT_DATABASES;
+DEFAULT_DATABASE.activeDatabase = 'SQL_CLASS';
+
 export class OracleError extends Error {
   constructor(code, message, line = null) {
     super(`${code}: ${message}`);
@@ -143,13 +167,26 @@ export class OracleDatabase {
         if (raw) {
           const parsed = JSON.parse(raw);
           if (parsed && parsed.tables) {
-            if (!parsed.currentContainer) parsed.currentContainer = 'FREEPDB1';
-            if (!parsed.currentUser) parsed.currentUser = 'SYS';
+            if (!parsed.currentContainer) parsed.currentContainer = 'SQL_CLASS';
+            if (!parsed.currentUser) parsed.currentUser = 'STUDENT';
             if (!parsed.users) parsed.users = JSON.parse(JSON.stringify(DEFAULT_DATABASE.users));
             if (!parsed.roles) parsed.roles = JSON.parse(JSON.stringify(DEFAULT_DATABASE.roles));
             if (!parsed.userPrivileges) parsed.userPrivileges = JSON.parse(JSON.stringify(DEFAULT_DATABASE.userPrivileges));
             if (!parsed.userRoles) parsed.userRoles = JSON.parse(JSON.stringify(DEFAULT_DATABASE.userRoles));
             if (!parsed.tabPrivileges) parsed.tabPrivileges = {};
+
+            if (!parsed.databases) {
+              parsed.databases = JSON.parse(JSON.stringify(DEFAULT_DATABASES));
+              if (parsed.tables) {
+                parsed.databases.SQL_CLASS.tables = {
+                  ...parsed.databases.SQL_CLASS.tables,
+                  ...parsed.tables
+                };
+              }
+            }
+            if (!parsed.activeDatabase) {
+              parsed.activeDatabase = 'SQL_CLASS';
+            }
             return parsed;
           }
         }
@@ -176,18 +213,229 @@ export class OracleDatabase {
     return { message: 'Database reset to default sample schema and data.' };
   }
 
+  ensureDatabases() {
+    if (!this.db.databases) {
+      this.db.databases = JSON.parse(JSON.stringify(DEFAULT_DATABASES));
+      if (this.db.tables) {
+        this.db.databases.SQL_CLASS.tables = {
+          ...this.db.databases.SQL_CLASS.tables,
+          ...this.db.tables
+        };
+      }
+    }
+    if (!this.db.activeDatabase) {
+      this.db.activeDatabase = 'SQL_CLASS';
+    }
+  }
+
+  getDatabases() {
+    this.ensureDatabases();
+    return this.db.databases;
+  }
+
+  getActiveDatabase() {
+    this.ensureDatabases();
+    return this.db.activeDatabase || 'SQL_CLASS';
+  }
+
+  createDatabase(name, username = 'STUDENT', password = 'password') {
+    this.ensureDatabases();
+    const cleanName = (name || '').trim();
+    if (!cleanName) {
+      throw new OracleError('ORA-00903', 'invalid table or database name');
+    }
+    const key = cleanName.toUpperCase();
+    if (this.db.databases[key]) {
+      throw new OracleError('ORA-01501', `database '${cleanName}' already exists`);
+    }
+
+    const cleanUser = (username || 'STUDENT').trim().toUpperCase();
+    const cleanPass = password || 'password';
+
+    this.db.databases[key] = {
+      name: cleanName,
+      username: cleanUser,
+      password: cleanPass,
+      tables: {
+        DUAL: JSON.parse(JSON.stringify(DEFAULT_DATABASE.tables.DUAL))
+      },
+      views: {},
+      connected: false
+    };
+
+    if (!this.db.users) this.db.users = {};
+    if (!this.db.users[cleanUser]) {
+      this.db.users[cleanUser] = {
+        username: cleanUser,
+        password: cleanPass,
+        account_status: 'OPEN',
+        default_tablespace: 'USERS',
+        temporary_tablespace: 'TEMP',
+        created: this.formatSysdate(),
+        oracle_maintained: 'N',
+        quota: 'UNLIMITED'
+      };
+    }
+
+    this.notifyChange();
+    return this.db.databases[key];
+  }
+
+  connectDatabase(name, username = null, password = null) {
+    this.ensureDatabases();
+    const key = (name || '').toUpperCase().trim();
+    const targetDb = this.db.databases[key];
+    if (!targetDb) {
+      throw new OracleError('ORA-01034', `ORACLE not available - database '${name}' does not exist`);
+    }
+
+    const expectedUser = targetDb.username ? targetDb.username.toUpperCase() : 'SYS';
+    const loginUser = (username || expectedUser).toUpperCase();
+
+    if (password !== null && password !== undefined && password !== '') {
+      if (targetDb.password && password !== targetDb.password && !['oracle', 'change_on_install', 'manager'].includes(password)) {
+        throw new OracleError('ORA-01017', 'invalid username/password; logon denied');
+      }
+    }
+
+    for (const k of Object.keys(this.db.databases)) {
+      this.db.databases[k].connected = (k === key);
+    }
+
+    this.db.activeDatabase = key;
+    this.db.currentContainer = key;
+    this.db.currentUser = loginUser;
+
+    this.notifyChange();
+    return {
+      type: 'DDL',
+      command: `CONNECT ${loginUser}@${targetDb.name}`,
+      message: `Connected to ${targetDb.name} as ${loginUser}.`
+    };
+  }
+
+  renameTable(oldName, newName, dbKey = null) {
+    this.ensureDatabases();
+    const active = (dbKey || this.db.activeDatabase || 'SQL_CLASS').toUpperCase();
+    const targetTables = this.db.databases[active] ? this.db.databases[active].tables : this.db.tables;
+    const oldUpper = oldName.toUpperCase().trim();
+    const newUpper = newName.toUpperCase().trim();
+
+    if (!newUpper) throw new OracleError('ORA-00903', 'invalid table name');
+    if (!targetTables[oldUpper]) throw new OracleError('ORA-00942', 'table or view does not exist');
+    if (targetTables[newUpper]) throw new OracleError('ORA-00955', 'name is already used by an existing object');
+
+    targetTables[newUpper] = targetTables[oldUpper];
+    targetTables[newUpper].name = newUpper;
+    delete targetTables[oldUpper];
+    if (this.db.tables) {
+      delete this.db.tables[oldUpper];
+      this.db.tables[newUpper] = targetTables[newUpper];
+    }
+    this.notifyChange();
+    return { type: 'DDL', message: `Table '${oldUpper}' renamed to '${newUpper}'.` };
+  }
+
+  dropTable(tableName, dbKey = null) {
+    this.ensureDatabases();
+    const active = (dbKey || this.db.activeDatabase || 'SQL_CLASS').toUpperCase();
+    const targetTables = this.db.databases[active] ? this.db.databases[active].tables : this.db.tables;
+    const upper = tableName.toUpperCase().trim();
+
+    if (!targetTables[upper]) throw new OracleError('ORA-00942', 'table or view does not exist');
+    delete targetTables[upper];
+    if (this.db.tables && this.db.tables[upper]) delete this.db.tables[upper];
+    this.notifyChange();
+    return { type: 'DDL', message: `Table '${upper}' dropped.` };
+  }
+
+  truncateTable(tableName, dbKey = null) {
+    this.ensureDatabases();
+    const active = (dbKey || this.db.activeDatabase || 'SQL_CLASS').toUpperCase();
+    const targetTables = this.db.databases[active] ? this.db.databases[active].tables : this.db.tables;
+    const upper = tableName.toUpperCase().trim();
+
+    if (!targetTables[upper]) throw new OracleError('ORA-00942', 'table or view does not exist');
+    targetTables[upper].rows = [];
+    this.notifyChange();
+    return { type: 'DDL', message: `Table '${upper}' truncated.` };
+  }
+
+  renameDatabase(oldName, newName) {
+    this.ensureDatabases();
+    const oldKey = oldName.toUpperCase().trim();
+    const newKey = newName.toUpperCase().trim();
+
+    if (!newKey) throw new OracleError('ORA-00903', 'invalid database name');
+    if (!this.db.databases[oldKey]) throw new OracleError('ORA-01501', `database '${oldName}' does not exist`);
+    if (this.db.databases[newKey]) throw new OracleError('ORA-01501', `database '${newName}' already exists`);
+
+    const dbObj = this.db.databases[oldKey];
+    dbObj.name = newName.trim();
+    this.db.databases[newKey] = dbObj;
+    delete this.db.databases[oldKey];
+
+    if (this.db.activeDatabase === oldKey) {
+      this.db.activeDatabase = newKey;
+      this.db.currentContainer = newKey;
+    }
+    this.notifyChange();
+    return { type: 'DDL', message: `Database '${oldName}' renamed to '${newName}'.` };
+  }
+
+  dropDatabase(dbName) {
+    this.ensureDatabases();
+    const key = dbName.toUpperCase().trim();
+    if (!this.db.databases[key]) throw new OracleError('ORA-01501', `database '${dbName}' does not exist`);
+
+    delete this.db.databases[key];
+    const remaining = Object.keys(this.db.databases);
+    if (this.db.activeDatabase === key) {
+      this.db.activeDatabase = remaining.length > 0 ? remaining[0] : 'SQL_CLASS';
+      if (this.db.databases[this.db.activeDatabase]) {
+        this.db.databases[this.db.activeDatabase].connected = true;
+      }
+    }
+    this.notifyChange();
+    return { type: 'DDL', message: `Database '${dbName}' dropped.` };
+  }
+
+  disconnectDatabase(dbName) {
+    this.ensureDatabases();
+    const key = dbName.toUpperCase().trim();
+    if (this.db.databases[key]) {
+      this.db.databases[key].connected = false;
+    }
+    if (this.db.activeDatabase === key) {
+      this.db.currentUser = 'NONE';
+    }
+    this.notifyChange();
+    return { type: 'DDL', message: `Disconnected from ${dbName}.` };
+  }
+
   getTables() {
-    return this.db.tables;
+    this.ensureDatabases();
+    const active = (this.db.activeDatabase || 'SQL_CLASS').toUpperCase();
+    if (this.db.databases && this.db.databases[active]) {
+      return this.db.databases[active].tables || {};
+    }
+    return this.db.tables || {};
   }
 
   getViews() {
+    this.ensureDatabases();
+    const active = (this.db.activeDatabase || 'SQL_CLASS').toUpperCase();
+    if (this.db.databases && this.db.databases[active]) {
+      return this.db.databases[active].views || {};
+    }
     return this.db.views || {};
   }
 
   getTable(name) {
     if (!name) return null;
     const upper = name.toUpperCase();
-    if (this.db.tables[upper]) return this.db.tables[upper];
+    const tables = this.getTables();
+    if (tables[upper]) return tables[upper];
     return this.getDictionaryView(upper);
   }
 
@@ -705,17 +953,35 @@ export class OracleDatabase {
       return { type: 'DDL', command: sql, message: 'Role created.' };
     }
 
+    // CREATE DATABASE / CREATE PLUGGABLE DATABASE
+    const createDbMatch = sql.match(/^CREATE\s+(?:PLUGGABLE\s+)?DATABASE\s+([a-zA-Z0-9_$#]+)(?:\s+USER\s+([a-zA-Z0-9_$#]+)\s+IDENTIFIED\s+BY\s+(?:"([^"]+)"|([a-zA-Z0-9_$#]+)))?/i);
+    if (createDbMatch) {
+      const dbName = createDbMatch[1];
+      const username = createDbMatch[2] || 'STUDENT';
+      const password = createDbMatch[3] || createDbMatch[4] || 'password';
+      this.createDatabase(dbName, username, password);
+      return {
+        type: 'DDL',
+        command: sql,
+        message: `Database '${dbName.toUpperCase()}' created.`
+      };
+    }
+
     const tableMatch = sql.match(/^CREATE\s+TABLE\s+([a-zA-Z0-9_$#]+)\s*\(([\s\S]+)\)$/i);
     if (!tableMatch) {
       throw new OracleError('ORA-00901', 'invalid CREATE command syntax');
     }
 
     const tableName = tableMatch[1].toUpperCase();
-    if (this.db.tables[tableName]) {
+    const active = (this.db.activeDatabase || 'SQL_CLASS').toUpperCase();
+    this.ensureDatabases();
+    const targetTables = this.db.databases[active] ? this.db.databases[active].tables : this.db.tables;
+
+    if (targetTables[tableName]) {
       throw new OracleError('ORA-00955', 'name is already used by an existing object');
     }
 
-    const colDefsRaw = this.splitColumnDefs(tableMatch[2]);
+    const { parts: colDefsRaw, hasTrailingComma } = this.splitColumnDefs(tableMatch[2]);
     const columns = [];
     const primaryKeys = [];
 
@@ -731,19 +997,89 @@ export class OracleDatabase {
         continue;
       }
 
-      const colParts = def.split(/\s+/);
-      const colName = colParts[0].toUpperCase();
-      const rest = def.slice(colParts[0].length).trim();
+      const fkMatch = def.match(/^(?:CONSTRAINT\s+([a-zA-Z0-9_$#]+)\s+)?FOREIGN\s+KEY\s*\(([^)]+)\)\s+REFERENCES\s+([a-zA-Z0-9_$#]+)(?:\s*\(([^)]+)\))?/i);
+      if (fkMatch) {
+        continue;
+      }
 
-      const typeMatch = rest.match(/^([a-zA-Z0-9_]+(?:\s*\(\s*\d+(?:\s*,\s*\d+)?\s*\))?)/i);
-      if (!typeMatch) {
+      const nameMatch = def.match(/^("([^"]+)"|([a-zA-Z0-9_$#]+))\s+/);
+      if (!nameMatch) {
         throw new OracleError('ORA-00904', `invalid column definition: ${def}`);
       }
 
-      const rawType = typeMatch[1].toUpperCase();
-      let isPk = /PRIMARY\s+KEY/i.test(rest);
-      let nullable = !/NOT\s+NULL/i.test(rest);
-      if (isPk) nullable = false;
+      const colName = (nameMatch[2] || nameMatch[3]).toUpperCase();
+      let rest = def.slice(nameMatch[0].length).trim();
+
+      const typeMatch = rest.match(/^(VARCHAR2|VARCHAR|NVARCHAR2|CHAR|NCHAR|NUMBER|NUMERIC|DECIMAL|INT|INTEGER|SMALLINT|FLOAT|DATE|TIMESTAMP(?:\s+WITH(?:\s+LOCAL)?\s+TIME\s+ZONE)?|CLOB|BLOB|NCLOB|BFILE|RAW|ROWID|BOOLEAN)(?:\s*\(\s*\d+(?:\s*,\s*\d+)?(?:\s+(?:BYTE|CHAR))?\s*\))?/i);
+      if (!typeMatch) {
+        throw new OracleError('ORA-00902', `invalid datatype: ${rest}`);
+      }
+
+      const rawType = typeMatch[0].toUpperCase();
+      rest = rest.slice(typeMatch[0].length).trim();
+
+      let isPk = false;
+      let nullable = true;
+
+      while (rest.length > 0) {
+        const defMatch = rest.match(/^DEFAULT\s+('([^']*)'|-?\d+(?:\.\d+)?|NULL|SYSDATE|[a-zA-Z0-9_$#]+)/i);
+        if (defMatch) {
+          rest = rest.slice(defMatch[0].length).trim();
+          continue;
+        }
+
+        const colPkMatch = rest.match(/^(?:CONSTRAINT\s+([a-zA-Z0-9_$#]+)\s+)?PRIMARY\s+KEY/i);
+        if (colPkMatch) {
+          isPk = true;
+          nullable = false;
+          rest = rest.slice(colPkMatch[0].length).trim();
+          continue;
+        }
+
+        const notNullMatch = rest.match(/^(?:CONSTRAINT\s+([a-zA-Z0-9_$#]+)\s+)?NOT\s+NULL/i);
+        if (notNullMatch) {
+          nullable = false;
+          rest = rest.slice(notNullMatch[0].length).trim();
+          continue;
+        }
+
+        const nullMatch = rest.match(/^NULL\b/i);
+        if (nullMatch) {
+          nullable = true;
+          rest = rest.slice(nullMatch[0].length).trim();
+          continue;
+        }
+
+        const uniqMatch = rest.match(/^(?:CONSTRAINT\s+([a-zA-Z0-9_$#]+)\s+)?UNIQUE/i);
+        if (uniqMatch) {
+          rest = rest.slice(uniqMatch[0].length).trim();
+          continue;
+        }
+
+        const checkMatch = rest.match(/^(?:CONSTRAINT\s+([a-zA-Z0-9_$#]+)\s+)?CHECK\s*\([^)]*\)/i);
+        if (checkMatch) {
+          rest = rest.slice(checkMatch[0].length).trim();
+          continue;
+        }
+
+        const refMatch = rest.match(/^(?:CONSTRAINT\s+([a-zA-Z0-9_$#]+)\s+)?REFERENCES\s+[a-zA-Z0-9_$#]+(?:\s*\([^)]*\))?(?:\s+ON\s+DELETE\s+(?:CASCADE|SET\s+NULL))?/i);
+        if (refMatch) {
+          rest = rest.slice(refMatch[0].length).trim();
+          continue;
+        }
+
+        const enableMatch = rest.match(/^(?:ENABLE|DISABLE)\b/i);
+        if (enableMatch) {
+          rest = rest.slice(enableMatch[0].length).trim();
+          continue;
+        }
+
+        break;
+      }
+
+      if (rest.length > 0) {
+        throw new OracleError('ORA-00907', 'missing right parenthesis');
+      }
 
       columns.push({
         name: colName,
@@ -751,6 +1087,10 @@ export class OracleDatabase {
         isPk: isPk,
         nullable: nullable
       });
+    }
+
+    if (hasTrailingComma) {
+      throw new OracleError('ORA-00904', ': invalid identifier');
     }
 
     for (const pk of primaryKeys) {
@@ -761,11 +1101,14 @@ export class OracleDatabase {
       }
     }
 
-    this.db.tables[tableName] = {
+    targetTables[tableName] = {
       name: tableName,
       columns: columns,
       rows: []
     };
+    if (this.db.tables) {
+      this.db.tables[tableName] = targetTables[tableName];
+    }
 
     this.notifyChange();
     return {
@@ -776,6 +1119,12 @@ export class OracleDatabase {
   }
 
   splitColumnDefs(str) {
+    const trimmed = str.trim();
+    if (trimmed.startsWith(',')) {
+      throw new OracleError('ORA-00904', ': invalid identifier');
+    }
+    const hasTrailingComma = trimmed.endsWith(',');
+
     const parts = [];
     let current = '';
     let parenCount = 0;
@@ -785,19 +1134,26 @@ export class OracleDatabase {
       else if (char === ')') parenCount--;
 
       if (char === ',' && parenCount === 0) {
+        if (!current.trim()) {
+          throw new OracleError('ORA-00904', ': invalid identifier');
+        }
         parts.push(current.trim());
         current = '';
       } else {
         current += char;
       }
     }
-    if (current.trim()) parts.push(current.trim());
-    return parts;
+    if (current.trim()) {
+      parts.push(current.trim());
+    }
+    return { parts, hasTrailingComma };
   }
 
   // DDL: DROP TABLE, DROP VIEW, TRUNCATE, ALTER
   execDrop(sql) {
-    const dropUserMatch = sql.match(/^DROP\s+USER\s+([a-zA-Z0-9_$#]+)(?:\s+CASCADE)?/i);
+    const clean = sql.replace(/;+$/, '').trim();
+
+    const dropUserMatch = clean.match(/^DROP\s+USER\s+([a-zA-Z0-9_$#]+)(?:\s+CASCADE)?/i);
     if (dropUserMatch) {
       const username = dropUserMatch[1].toUpperCase();
       if (!this.db.users?.[username]) {
@@ -811,7 +1167,7 @@ export class OracleDatabase {
       return { type: 'DDL', command: sql, message: 'User dropped.' };
     }
 
-    const dropRoleMatch = sql.match(/^DROP\s+ROLE\s+([a-zA-Z0-9_$#]+)/i);
+    const dropRoleMatch = clean.match(/^DROP\s+ROLE\s+([a-zA-Z0-9_$#]+)/i);
     if (dropRoleMatch) {
       const roleName = dropRoleMatch[1].toUpperCase();
       if (!this.db.roles?.[roleName]) {
@@ -822,7 +1178,7 @@ export class OracleDatabase {
       return { type: 'DDL', command: sql, message: 'Role dropped.' };
     }
 
-    const dropViewMatch = sql.match(/^DROP\s+VIEW\s+([a-zA-Z0-9_$#]+)/i);
+    const dropViewMatch = clean.match(/^DROP\s+VIEW\s+([a-zA-Z0-9_$#]+)/i);
     if (dropViewMatch) {
       const viewName = dropViewMatch[1].toUpperCase();
       if (!this.db.views || !this.db.views[viewName]) {
@@ -833,15 +1189,46 @@ export class OracleDatabase {
       return { type: 'DDL', command: sql, message: 'View dropped.' };
     }
 
-    const dropTableMatch = sql.match(/^DROP\s+TABLE\s+([a-zA-Z0-9_$#]+)(?:\s+PURGE)?(?:\s+CASCADE\s+CONSTRAINTS)?/i);
+    const dropDbMatch = clean.match(/^DROP\s+DATABASE\s+([a-zA-Z0-9_$#]+)/i);
+    if (dropDbMatch) {
+      const dbName = dropDbMatch[1].toUpperCase();
+      this.ensureDatabases();
+      if (!this.db.databases[dbName]) {
+        throw new OracleError('ORA-01501', `database '${dropDbMatch[1]}' does not exist`);
+      }
+      if (this.db.activeDatabase === dbName) {
+        this.db.activeDatabase = 'SQL_CLASS';
+      }
+      delete this.db.databases[dbName];
+      this.notifyChange();
+      return { type: 'DDL', command: sql, message: 'Database dropped.' };
+    }
+
+    const dropTableMatch = clean.match(/^DROP\s+TABLE\s+([a-zA-Z0-9_$#]+)(?:\s+PURGE)?(?:\s+CASCADE\s+CONSTRAINTS)?/i);
     if (dropTableMatch) {
       const tableName = dropTableMatch[1].toUpperCase();
-      if (!this.db.tables[tableName]) {
+      const active = (this.db.activeDatabase || 'SQL_CLASS').toUpperCase();
+      this.ensureDatabases();
+      const targetTables = this.db.databases[active] ? this.db.databases[active].tables : this.db.tables;
+
+      if (!targetTables[tableName]) {
         throw new OracleError('ORA-00942', 'table or view does not exist');
       }
-      delete this.db.tables[tableName];
+      delete targetTables[tableName];
+      if (this.db.tables && this.db.tables[tableName]) {
+        delete this.db.tables[tableName];
+      }
       this.notifyChange();
       return { type: 'DDL', command: sql, message: 'Table dropped.' };
+    }
+
+    const dropMatch = clean.match(/^DROP\s+([a-zA-Z0-9_$#]+)/i);
+    if (dropMatch) {
+      const kw = dropMatch[1].toUpperCase();
+      const validKeywords = ['TABLE', 'VIEW', 'USER', 'ROLE', 'SEQUENCE', 'INDEX', 'TRIGGER', 'PROCEDURE', 'FUNCTION', 'PACKAGE', 'SYNONYM', 'DATABASE', 'TABLESPACE'];
+      if (!validKeywords.includes(kw)) {
+        throw new OracleError('ORA-00950', `invalid DROP option (TABLE keyword must be used, e.g., 'DROP TABLE ${dropMatch[1]}')`);
+      }
     }
 
     throw new OracleError('ORA-00901', 'invalid DROP command syntax');
@@ -865,6 +1252,10 @@ export class OracleDatabase {
     const setContainerMatch = clean.match(/^ALTER\s+SESSION\s+SET\s+CONTAINER\s*=\s*([a-zA-Z0-9_$#]+)/i);
     if (setContainerMatch) {
       const targetContainer = setContainerMatch[1].toUpperCase();
+      this.ensureDatabases();
+      if (this.db.databases[targetContainer]) {
+        return this.connectDatabase(targetContainer);
+      }
       this.db.currentContainer = targetContainer;
       this.notifyChange();
       return { type: 'DDL', command: sql, message: 'Session altered.' };
@@ -916,6 +1307,11 @@ export class OracleDatabase {
 
       this.notifyChange();
       return { type: 'DDL', command: sql, message: 'User altered.' };
+    }
+
+    const renameMatch = clean.match(/^ALTER\s+TABLE\s+([a-zA-Z0-9_$#]+)\s+RENAME\s+TO\s+([a-zA-Z0-9_$#]+)/i);
+    if (renameMatch) {
+      return this.renameTable(renameMatch[1], renameMatch[2]);
     }
 
     const addMatch = sql.match(/^ALTER\s+TABLE\s+([a-zA-Z0-9_$#]+)\s+ADD\s+\(?([a-zA-Z0-9_$#]+)\s+([a-zA-Z0-9_()]+)\)?/i);
@@ -1031,17 +1427,28 @@ export class OracleDatabase {
       throw new OracleError('ORA-00900', 'invalid CONNECT syntax');
     }
 
-    let username = match[1].replace(/"/g, '').toUpperCase();
-    const service = match[3];
+    let p1 = match[1].replace(/"/g, '').toUpperCase();
+    let pPassword = match[2];
+    let pService = match[3];
 
-    if (service) {
-      const parts = service.split('/');
-      const pdbName = parts[parts.length - 1].toUpperCase();
-      if (['FREEPDB1', 'XEPDB1', 'CDB$ROOT'].includes(pdbName)) {
-        this.db.currentContainer = pdbName;
-      }
+    this.ensureDatabases();
+
+    // 1. Direct database connect e.g. "CONNECT sql_class" or "CONN Oracle26"
+    if (!pPassword && !pService && this.db.databases[p1]) {
+      return this.connectDatabase(p1);
     }
 
+    // 2. Connect with service e.g. "CONNECT student/pass@sql_class"
+    if (pService) {
+      const parts = pService.split('/');
+      const targetDbName = parts[parts.length - 1].toUpperCase();
+      if (this.db.databases[targetDbName]) {
+        return this.connectDatabase(targetDbName, p1, pPassword);
+      }
+      this.db.currentContainer = targetDbName;
+    }
+
+    const username = p1;
     const user = this.db.users?.[username];
     if (!user) {
       throw new OracleError('ORA-01017', 'invalid username/password; logon denied');
@@ -1056,7 +1463,7 @@ export class OracleDatabase {
     return {
       type: 'DDL',
       command: sql,
-      message: `Connected to ${this.db.currentContainer || 'FREEPDB1'}.`
+      message: `Connected to ${this.db.currentContainer || 'SQL_CLASS'} as ${username}.`
     };
   }
 
@@ -2043,12 +2450,30 @@ export class OracleDatabase {
       return isNot ? !has : has;
     }
 
-    const likeMatch = trimmed.match(/^([\s\S]+?)\s+(NOT\s+)?LIKE\s+'([\s\S]*?)'$/i);
+    const likeMatch = trimmed.match(/^([\s\S]+?)\s+(NOT\s+)?LIKE\s*'([\s\S]*?)'(?:\s+ESCAPE\s*'([\s\S]*?)')?$/i);
     if (likeMatch) {
-      const val = String(this.evaluateExpression(likeMatch[1], row) || '');
+      const rawVal = this.evaluateExpression(likeMatch[1], row);
+      if (rawVal === null || rawVal === undefined) return false;
+      const val = String(rawVal);
       const isNot = !!likeMatch[2];
       const pattern = likeMatch[3];
-      const regexStr = '^' + pattern.replace(/([.*+?^=!:${}()|\[\]\/\\])/g, '\\$1').replace(/%/g, '.*').replace(/_/g, '.') + '$';
+      const escapeChar = likeMatch[4];
+
+      let regexStr = '^';
+      for (let i = 0; i < pattern.length; i++) {
+        if (escapeChar && pattern[i] === escapeChar && i + 1 < pattern.length) {
+          i++;
+          regexStr += pattern[i].replace(/([.*+?^=!:${}()|\[\]\/\\])/g, '\\$1');
+        } else if (pattern[i] === '%') {
+          regexStr += '.*';
+        } else if (pattern[i] === '_') {
+          regexStr += '.';
+        } else {
+          regexStr += pattern[i].replace(/([.*+?^=!:${}()|\[\]\/\\])/g, '\\$1');
+        }
+      }
+      regexStr += '$';
+
       const regex = new RegExp(regexStr, 'i');
       const match = regex.test(val);
       return isNot ? !match : match;
@@ -2165,8 +2590,124 @@ export class OracleDatabase {
     return items;
   }
 
+  validateValueExpression(expr) {
+    const trimmed = expr.trim();
+    if (!trimmed) {
+      throw new OracleError('ORA-00936', 'missing expression');
+    }
+
+    const tokens = [];
+    let i = 0;
+    while (i < trimmed.length) {
+      if (/\s/.test(trimmed[i])) {
+        i++;
+        continue;
+      }
+
+      // String literal
+      if (trimmed[i] === "'") {
+        let str = "'";
+        i++;
+        while (i < trimmed.length) {
+          if (trimmed[i] === "'") {
+            str += "'";
+            i++;
+            if (i < trimmed.length && trimmed[i] === "'") {
+              str += "'";
+              i++;
+            } else {
+              break;
+            }
+          } else {
+            str += trimmed[i];
+            i++;
+          }
+        }
+        tokens.push({ type: 'LITERAL', val: str });
+        continue;
+      }
+
+      // Parentheses
+      if (trimmed[i] === '(') {
+        let depth = 1;
+        let sub = '(';
+        i++;
+        let inSingle = false;
+        while (i < trimmed.length && depth > 0) {
+          const char = trimmed[i];
+          if (char === "'") inSingle = !inSingle;
+          if (!inSingle) {
+            if (char === '(') depth++;
+            else if (char === ')') depth--;
+          }
+          sub += char;
+          i++;
+        }
+        tokens.push({ type: 'PAREN', val: sub });
+        continue;
+      }
+
+      // Concatenation operator ||
+      if (trimmed.startsWith('||', i)) {
+        tokens.push({ type: 'OP', val: '||' });
+        i += 2;
+        continue;
+      }
+
+      // Arithmetic operators +, -, *, /
+      if (['+', '-', '*', '/'].includes(trimmed[i])) {
+        const prev = tokens[tokens.length - 1];
+        if ((trimmed[i] === '+' || trimmed[i] === '-') && (!prev || prev.type === 'OP')) {
+          tokens.push({ type: 'UNARY_OP', val: trimmed[i] });
+        } else {
+          tokens.push({ type: 'OP', val: trimmed[i] });
+        }
+        i++;
+        continue;
+      }
+
+      // Atom (identifier, keyword, number)
+      const wordMatch = trimmed.slice(i).match(/^[a-zA-Z0-9_$#.]+/);
+      if (wordMatch) {
+        tokens.push({ type: 'ATOM', val: wordMatch[0] });
+        i += wordMatch[0].length;
+        continue;
+      }
+
+      tokens.push({ type: 'CHAR', val: trimmed[i] });
+      i++;
+    }
+
+    const isValTerm = (t) => t.type === 'LITERAL' || t.type === 'ATOM' || t.type === 'PAREN';
+
+    for (let k = 0; k < tokens.length - 1; k++) {
+      const cur = tokens[k];
+      const next = tokens[k + 1];
+
+      // Identifier followed by '(' is a function call
+      if (cur.type === 'ATOM' && next.type === 'PAREN') {
+        continue;
+      }
+
+      if (isValTerm(cur) && isValTerm(next)) {
+        throw new OracleError('ORA-00917', 'missing comma');
+      }
+    }
+  }
+
   splitValuesList(str) {
-    return this.splitCommaExpressions(str);
+    const trimmed = str.trim();
+    if (trimmed.startsWith(',') || trimmed.endsWith(',')) {
+      throw new OracleError('ORA-00936', 'missing expression');
+    }
+    const items = this.splitCommaExpressions(trimmed);
+    for (const item of items) {
+      if (!item.trim()) {
+        throw new OracleError('ORA-00936', 'missing expression');
+      }
+      this.validateValueExpression(item);
+    }
+    return items;
   }
 
   parseLiteralValue(valStr) {

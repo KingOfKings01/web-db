@@ -9,6 +9,8 @@
     if (!str) return '';
     return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
   }
+
+  $: userTables = Object.entries($tablesStore || {}).filter(([tableName]) => tableName !== 'DUAL');
 </script>
 
 <aside class="sidebar sidebar-right" class:collapsed={collapsed} style="width: {collapsed ? 34 : width}px;">
@@ -23,9 +25,6 @@
     </button>
     {#if !collapsed}
       <div class="sidebar-title">
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
-        </svg>
         <span>Available Tables</span>
       </div>
       <span style="font-size: 11px; color: var(--text-muted); font-weight: 600;">Live</span>
@@ -33,33 +32,38 @@
   </div>
 
   <div class="sidebar-content right-tables-container">
-    {#each Object.entries($tablesStore) as [tableName, table]}
-      {#if tableName !== 'DUAL'}
+    {#if userTables.length === 0}
+      <div style="padding: 28px 14px; text-align: center; color: var(--text-muted); font-size: 12px;">
+        <p style="margin: 0 0 6px 0; font-weight: 600; color: var(--text-main);">No Tables Available</p>
+        <span style="font-size: 11px; color: var(--text-subtle);">Tables in the active database will appear here live.</span>
+      </div>
+    {:else}
+      {#each userTables as [tableName, table]}
         <div class="available-table-card">
           <div class="card-head">
             <span class="table-name">{capitalize(tableName)}</span>
-            <span class="table-count">{table.rows.length} rows</span>
+            <span class="table-count">{(table.rows?.length || 0)} rows</span>
           </div>
           <div style="overflow-x: auto;">
             <table>
               <thead>
                 <tr>
-                  {#each table.columns as col}
+                  {#each (table.columns || []) as col}
                     <th>{col.name.toLowerCase()}</th>
                   {/each}
                 </tr>
               </thead>
               <tbody>
-                {#if table.rows.length === 0}
+                {#if !table.rows || table.rows.length === 0}
                   <tr>
-                    <td colspan="{table.columns.length}" style="text-align: center; color: var(--text-subtle);">
+                    <td colspan="{(table.columns?.length || 1)}" style="text-align: center; color: var(--text-subtle);">
                       (Empty)
                     </td>
                   </tr>
                 {:else}
                   {#each table.rows.slice(0, 10) as row}
                     <tr>
-                      {#each table.columns as col}
+                      {#each (table.columns || []) as col}
                         <td>
                           {#if row[col.name] === null || row[col.name] === undefined}
                             <span class="null-pill">null</span>
@@ -75,7 +79,7 @@
             </table>
           </div>
         </div>
-      {/if}
-    {/each}
+      {/each}
+    {/if}
   </div>
 </aside>
