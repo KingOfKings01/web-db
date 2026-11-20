@@ -9,6 +9,64 @@
   export let queryStatus = 'Ready';
   export let onToggleTheme = () => {};
   export let onExitMobile = () => {};
+  export let onOpenImport = () => {};
+  export let onOpenExport = () => {};
+
+  let undoStack = [];
+  let redoStack = [];
+  const MAX_HISTORY = 50;
+
+  function recordSnapshot() {
+    if (undoStack.length === 0 || undoStack[undoStack.length - 1] !== code) {
+      undoStack = [...undoStack.slice(-MAX_HISTORY + 1), code];
+      redoStack = [];
+    }
+  }
+
+  function handleUndo() {
+    if (undoStack.length === 0) return;
+    const currentCode = code;
+    redoStack = [...redoStack, currentCode];
+    const prev = undoStack[undoStack.length - 1];
+    undoStack = undoStack.slice(0, -1);
+    code = prev;
+    tick().then(() => {
+      if (textareaEl) {
+        textareaEl.selectionStart = textareaEl.selectionEnd = code.length;
+        textareaEl.focus();
+      }
+      syncScroll();
+    });
+  }
+
+  function handleRedo() {
+    if (redoStack.length === 0) return;
+    const currentCode = code;
+    undoStack = [...undoStack, currentCode];
+    const next = redoStack[redoStack.length - 1];
+    redoStack = redoStack.slice(0, -1);
+    code = next;
+    tick().then(() => {
+      if (textareaEl) {
+        textareaEl.selectionStart = textareaEl.selectionEnd = code.length;
+        textareaEl.focus();
+      }
+      syncScroll();
+    });
+  }
+
+  function handleClearEditor() {
+    if (!code) return;
+    recordSnapshot();
+    code = '';
+    tick().then(() => {
+      if (textareaEl) {
+        textareaEl.selectionStart = textareaEl.selectionEnd = 0;
+        textareaEl.focus();
+      }
+      syncScroll();
+    });
+  }
 
   let textareaEl;
   let hlEl;
@@ -325,6 +383,23 @@
   }
 
   function handleEditorKeyDown(e) {
+    if (e.ctrlKey || e.metaKey) {
+      if (e.key === 'z' || e.key === 'Z') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+        return;
+      }
+      if (e.key === 'y' || e.key === 'Y') {
+        e.preventDefault();
+        handleRedo();
+        return;
+      }
+    }
+
     if (showAutocomplete && currentSuggestions.length > 0) {
       if (e.key === 'Tab') {
         e.preventDefault();
@@ -344,6 +419,7 @@
 
   function insertText(t) {
     if (!textareaEl) return;
+    recordSnapshot();
     const s = textareaEl.selectionStart;
     const e = textareaEl.selectionEnd;
     code = code.slice(0, s) + t + code.slice(e);
@@ -359,6 +435,7 @@
 
   function backspace() {
     if (!textareaEl) return;
+    recordSnapshot();
     const s = textareaEl.selectionStart;
     const e = textareaEl.selectionEnd;
     if (s !== e) {
@@ -416,6 +493,7 @@
     const now = Date.now();
     if (now - lastInsertedChipTime < 150) return; // prevent duplicate fire from dblclick + pointerup
     lastInsertedChipTime = now;
+    recordSnapshot();
 
     const text = chip.t || chip;
     const isFunc = text.endsWith('(');
@@ -581,7 +659,7 @@
     '>': '>= ',
     ',': '<= ',
     '.': '>= ',
-    '-': '-- ',
+    '-': '_',
     '*': 'COUNT(*)',
     '/': '/*  */',
     ';': ':',
@@ -602,6 +680,7 @@
     const keyword = HOLD_KEYWORDS[lowerKey] || HOLD_KEYWORDS[k];
 
     if (keyword) {
+      recordSnapshot();
       if (typeof navigator !== 'undefined' && navigator.vibrate) {
         try { navigator.vibrate(25); } catch (_) {}
       }
@@ -1151,7 +1230,14 @@
             <button class="k s" on:pointerdown={(e) => handleKeypadPress('Tab', e)}>Tab</button>
             <button class="k dual-key sy" on:pointerdown={(e) => handleKeypadPress("'", e)}><span class="ks-sub">"</span><span class="ks-main">'</span></button>
             <button class="k dual-key sy" on:pointerdown={(e) => handleKeypadPress(';', e)}><span class="ks-sub">:</span><span class="ks-main">;</span></button>
-            <button class="k dual-key sy" on:pointerdown={(e) => handleKeypadPress('-', e)}><span class="ks-sub">_</span><span class="ks-main">-</span></button>
+            <button class="k dual-key sy" on:pointerdown={(e) => handleKeypadPress('-', e)} title="Tap: - | Hold: _">
+              <span class="ks-sub ks-sub-underscore">
+                <svg width="12" height="6" viewBox="0 0 14 7" fill="none">
+                  <path d="M1.5 1.5v3.5h11v-3.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </span>
+              <span class="ks-main">-</span>
+            </button>
           </div>
         </div>
 
@@ -1209,6 +1295,91 @@
                     {/if}
                   </button>
                 {/each}
+              </div>
+            </div>
+
+            <!-- Mobile Editor Toolbar matching Desktop -->
+            <div class="mobile-editor-toolbar">
+              <span class="met-title">Worksheet</span>
+              <div class="met-actions">
+                <button 
+                  class="met-btn" 
+                  class:active={showOutput} 
+                  on:click={() => showOutput = !showOutput}
+                  title={showOutput ? "Show Input Editor" : "Show Query Output"}
+                  aria-label="Toggle Output"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="4" width="18" height="16" rx="2"></rect>
+                    <line x1="3" y1="13" x2="21" y2="13"></line>
+                    <line x1="8" y1="8.5" x2="16" y2="8.5"></line>
+                    <line x1="8" y1="17" x2="16" y2="17"></line>
+                  </svg>
+                </button>
+
+                <button 
+                  class="met-btn" 
+                  on:click={onOpenImport} 
+                  title="Import SQL Script (*.sql)..."
+                  aria-label="Import SQL"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                  </svg>
+                </button>
+
+                <button 
+                  class="met-btn" 
+                  on:click={onOpenExport} 
+                  title="Export SQL Script (*.sql)..."
+                  aria-label="Export SQL"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="17 8 12 3 7 8"></polyline>
+                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                  </svg>
+                </button>
+
+                <button 
+                  class="met-btn" 
+                  on:click={handleUndo} 
+                  disabled={undoStack.length === 0}
+                  title="Undo (Ctrl+Z)"
+                  aria-label="Undo"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 7v6h6"></path>
+                    <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"></path>
+                  </svg>
+                </button>
+
+                <button 
+                  class="met-btn" 
+                  on:click={handleRedo} 
+                  disabled={redoStack.length === 0}
+                  title="Redo (Ctrl+Y)"
+                  aria-label="Redo"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 7v6h-6"></path>
+                    <path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"></path>
+                  </svg>
+                </button>
+
+                <button 
+                  class="met-btn" 
+                  on:click={handleClearEditor} 
+                  title="Clear Editor (Undoable)"
+                  aria-label="Clear Editor"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"></polyline>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                  </svg>
+                </button>
               </div>
             </div>
 
@@ -1454,6 +1625,91 @@
               </div>
             </div>
 
+            <!-- Mobile Editor Toolbar matching Desktop -->
+            <div class="mobile-editor-toolbar">
+              <span class="met-title">Worksheet</span>
+              <div class="met-actions">
+                <button 
+                  class="met-btn" 
+                  class:active={showOutput} 
+                  on:click={() => showOutput = !showOutput}
+                  title={showOutput ? "Show Input Editor" : "Show Query Output"}
+                  aria-label="Toggle Output"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="4" width="18" height="16" rx="2"></rect>
+                    <line x1="3" y1="13" x2="21" y2="13"></line>
+                    <line x1="8" y1="8.5" x2="16" y2="8.5"></line>
+                    <line x1="8" y1="17" x2="16" y2="17"></line>
+                  </svg>
+                </button>
+
+                <button 
+                  class="met-btn" 
+                  on:click={onOpenImport} 
+                  title="Import SQL Script (*.sql)..."
+                  aria-label="Import SQL"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                  </svg>
+                </button>
+
+                <button 
+                  class="met-btn" 
+                  on:click={onOpenExport} 
+                  title="Export SQL Script (*.sql)..."
+                  aria-label="Export SQL"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="17 8 12 3 7 8"></polyline>
+                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                  </svg>
+                </button>
+
+                <button 
+                  class="met-btn" 
+                  on:click={handleUndo} 
+                  disabled={undoStack.length === 0}
+                  title="Undo (Ctrl+Z)"
+                  aria-label="Undo"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 7v6h6"></path>
+                    <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"></path>
+                  </svg>
+                </button>
+
+                <button 
+                  class="met-btn" 
+                  on:click={handleRedo} 
+                  disabled={redoStack.length === 0}
+                  title="Redo (Ctrl+Y)"
+                  aria-label="Redo"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 7v6h-6"></path>
+                    <path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"></path>
+                  </svg>
+                </button>
+
+                <button 
+                  class="met-btn" 
+                  on:click={handleClearEditor} 
+                  title="Clear Editor (Undoable)"
+                  aria-label="Clear Editor"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"></polyline>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                  </svg>
+                </button>
+              </div>
+            </div>
+
             <div class="code vertical-code">
               <div class="gut" bind:this={gutEl}>{gutContent}</div>
               <div class="ew">
@@ -1654,7 +1910,14 @@
                 Space
               </button>
 
-              <button class="k dual-key sy vk-sym-sm" on:pointerdown={(e) => handleKeypadPress('-', e)}><span class="ks-sub">_</span><span class="ks-main">-</span></button>
+              <button class="k dual-key sy vk-sym-sm" on:pointerdown={(e) => handleKeypadPress('-', e)} title="Tap: - | Hold: _">
+                <span class="ks-sub ks-sub-underscore">
+                  <svg width="12" height="6" viewBox="0 0 14 7" fill="none">
+                    <path d="M1.5 1.5v3.5h11v-3.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </span>
+                <span class="ks-main">-</span>
+              </button>
               <button class="k dual-key sy vk-sym-sm" on:pointerdown={(e) => handleKeypadPress('=', e)}><span class="ks-sub">+</span><span class="ks-main">=</span></button>
               <button class="k ent vk-ent" on:pointerdown={(e) => handleKeypadPress('Enter', e)}>
                 ⏎
@@ -2362,6 +2625,19 @@
     transition: color 0.15s ease, transform 0.15s ease;
   }
 
+  .k.dual-key .ks-sub.ks-sub-underscore {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 9px;
+  }
+
+  .k.dual-key .ks-sub.ks-sub-underscore svg {
+    display: block;
+    color: currentColor;
+    pointer-events: none;
+  }
+
   .k.dual-key .ks-main {
     font-size: 15px;
     font-weight: 600;
@@ -2400,6 +2676,65 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
+  }
+
+  /* Mobile Editor Action Toolbar matching Desktop SqlEditor */
+  .mobile-editor-toolbar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 3px 8px;
+    background: var(--pn, #f8fafc);
+    border-bottom: 1px solid var(--bd, #e2e8f0);
+    min-height: 30px;
+    box-sizing: border-box;
+  }
+
+  .met-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--mu, #64748b);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .met-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+  }
+
+  .met-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 26px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--fg, #334155);
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+
+  .met-btn:hover:not(:disabled) {
+    background: var(--kbg, rgba(0,0,0,0.06));
+    border-color: var(--kbd, #cbd5e1);
+  }
+
+  .met-btn:active:not(:disabled), .met-btn.active {
+    background: var(--acbg, #eff6ff);
+    color: var(--ac, #2563eb);
+    border-color: var(--acbd, #93c5fd);
+  }
+
+  .met-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
   }
 
   /* Categorized Shortcuts Bar (DDL, DML, DQL, DCL, TCL, Math, Regex, etc.) */

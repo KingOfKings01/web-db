@@ -267,6 +267,37 @@ assertTest('disconnectDatabase marks connection disconnected', !db.getDatabases(
 // Reconnect for consistency
 db.connectDatabase('sql_class');
 
+// 16. SQL Developer Export & Import Tests
+// 16a. Table Export to SQL
+const coursesExportSql = db.exportTableToSql('COURSES');
+assertTest('exportTableToSql generates valid CREATE TABLE DDL', coursesExportSql.includes('CREATE TABLE "COURSES"'));
+assertTest('exportTableToSql generates valid INSERT statements', coursesExportSql.includes('Insert into "COURSES"') && coursesExportSql.includes('Science'));
+assertTest('exportTableToSql ends with COMMIT', coursesExportSql.includes('COMMIT;'));
+
+// 16b. Database Export to SQL
+const dbExportSql = db.exportDatabaseToSql();
+assertTest('exportDatabaseToSql includes CONNECT statement', dbExportSql.includes('CONNECT STUDENT/password@sql_class;'));
+assertTest('exportDatabaseToSql includes multiple tables', dbExportSql.includes('"COURSES"') && dbExportSql.includes('"STUDENTS"'));
+
+// 16c. Table Export to CSV
+const coursesCsv = db.exportTableToCsv('COURSES');
+assertTest('exportTableToCsv produces CSV header and rows', coursesCsv.includes('"COURSE_ID","COURSE_NAME","FEE"') && coursesCsv.includes('101,Science,500'));
+
+// 16d. Roundtrip SQL Import Test: Export, Drop, Import, Verify
+const studentsExportSql = db.exportTableToSql('STUDENTS', { includeDrop: true });
+db.executeScript(studentsExportSql);
+const restoredStudents = db.getTable('STUDENTS');
+assertTest('Roundtrip SQL import restores table schema and rows', !!restoredStudents && restoredStudents.rows.length === 5);
+
+// 16e. CSV Import into Table
+db.executeScript("CREATE TABLE inventory (item_id NUMBER, item_name VARCHAR2(50), qty NUMBER);");
+const sampleCsv = `ITEM_ID,ITEM_NAME,QTY
+1,Keyboard,15
+2,Mouse,25
+3,Monitor,8`;
+const csvRes = db.importCsvToTable('INVENTORY', sampleCsv);
+assertTest('importCsvToTable imports CSV rows', csvRes.inserted === 3 && db.getTable('INVENTORY').rows.length === 3);
+
 console.log('==============================================');
 console.log(`  Tests Passed: ${passedCount} / ${totalCount}`);
 console.log('==============================================');

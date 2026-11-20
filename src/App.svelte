@@ -11,6 +11,8 @@
   import TableCanvasModal from './components/TableCanvasModal.svelte';
   import MobileKeyboardStudio from './components/MobileKeyboardStudio.svelte';
   import NewConnectionModal from './components/NewConnectionModal.svelte';
+  import ExportModal from './components/ExportModal.svelte';
+  import ImportModal from './components/ImportModal.svelte';
 
   const DEFAULT_QUERY = `-- Demo Queries (Insert & Select)
 SELECT name, course_id FROM students;
@@ -25,6 +27,12 @@ SELECT * FROM courses;`;
   let isRightCollapsed = false;
   let isCanvasOpen = false;
   let isNewConnectionModalOpen = false;
+  let isExportModalOpen = false;
+  let exportScope = 'database';
+  let exportTableName = '';
+  let exportDbKey = '';
+  let isImportModalOpen = false;
+  let importTargetDbKey = '';
   let isOutputCollapsed = false;
   let leftSidebarWidth = 260;
   let rightSidebarWidth = 320;
@@ -191,6 +199,33 @@ SELECT * FROM courses;`;
     if (editorComponent) {
       editorComponent.insertAtCursor(text);
     }
+  }
+
+  function handleOpenExport(scope = 'database', tableName = '', dbKey = '') {
+    exportScope = scope;
+    exportTableName = tableName;
+    exportDbKey = dbKey || oracleDb.getActiveDatabase();
+    isExportModalOpen = true;
+  }
+
+  function handleOpenImport(dbKey = '') {
+    importTargetDbKey = dbKey || oracleDb.getActiveDatabase();
+    isImportModalOpen = true;
+  }
+
+  function handleLoadIntoEditor(sql) {
+    editorCode = sql;
+    if (editorComponent) {
+      editorComponent.setCode(sql);
+    }
+  }
+
+  function handleExecuteImportedScript(sql, dbName) {
+    if (dbName && dbName.toUpperCase() !== oracleDb.getActiveDatabase().toUpperCase()) {
+      oracleDb.connectDatabase(dbName);
+    }
+    handleLoadIntoEditor(sql);
+    runQueryScript(sql);
   }
 
   function handleCreateTableTemplate() {
@@ -402,6 +437,8 @@ SELECT * FROM courses;`;
     onToggleTheme={handleToggleTheme}
     onExitMobile={handleExitMobile}
     onSwitchLayout={(mode) => handleSwitchView(mode)}
+    onOpenImport={() => handleOpenImport()}
+    onOpenExport={() => handleOpenExport('editor')}
   />
 {:else}
   <div class="app-container {theme}">
@@ -421,6 +458,8 @@ SELECT * FROM courses;`;
       onToggleCollapse={() => isLeftCollapsed = !isLeftCollapsed}
       onInsertText={handleInsertText}
       onOpenNewConnection={() => isNewConnectionModalOpen = true}
+      onOpenExport={handleOpenExport}
+      onOpenImport={handleOpenImport}
     />
 
     {#if !isLeftCollapsed}
@@ -451,6 +490,8 @@ SELECT * FROM courses;`;
           {theme}
           {isLeftCollapsed}
           onUncollapseLeft={() => isLeftCollapsed = false}
+          onOpenImport={() => handleOpenImport()}
+          onOpenExport={() => handleOpenExport('editor')}
         />
       </div>
 
@@ -493,18 +534,34 @@ SELECT * FROM courses;`;
       onToggleCollapse={() => isRightCollapsed = !isRightCollapsed}
     />
   </main>
-
-  <TableCanvasModal
-    bind:this={tableCanvasComponent}
-    visible={isCanvasOpen}
-    onClose={() => isCanvasOpen = false}
-  />
-
-  <NewConnectionModal
-    visible={isNewConnectionModalOpen}
-    onClose={() => isNewConnectionModalOpen = false}
-    onConnect={handleCreateAndConnect}
-  />
-
 </div>
 {/if}
+
+<TableCanvasModal
+  bind:this={tableCanvasComponent}
+  visible={isCanvasOpen}
+  onClose={() => isCanvasOpen = false}
+/>
+
+<NewConnectionModal
+  visible={isNewConnectionModalOpen}
+  onClose={() => isNewConnectionModalOpen = false}
+  onConnect={handleCreateAndConnect}
+/>
+
+<ExportModal
+  visible={isExportModalOpen}
+  initialScope={exportScope}
+  initialTableName={exportTableName}
+  initialDbKey={exportDbKey}
+  editorCode={editorCode}
+  onClose={() => isExportModalOpen = false}
+  onLoadIntoEditor={handleLoadIntoEditor}
+/>
+
+<ImportModal
+  visible={isImportModalOpen}
+  onClose={() => isImportModalOpen = false}
+  onLoadIntoEditor={handleLoadIntoEditor}
+  onExecuteScript={handleExecuteImportedScript}
+/>

@@ -11,6 +11,8 @@
   export let outputCollapsed = false;
   export let onToggleOutput = () => {};
   export let theme = 'theme-light';
+  export let onOpenImport = () => {};
+  export let onOpenExport = () => {};
 
   let host;
   let monaco;
@@ -269,9 +271,63 @@
   }
 
   export function clearEditor() {
-    if (!editor) return;
-    editor.setValue('');
+    if (!editor) {
+      code = '';
+      return;
+    }
+    const model = editor.getModel();
+    if (!model) {
+      editor.setValue('');
+      editor.focus();
+      return;
+    }
+    if (model.getValueLength() === 0) return;
+
+    const fullRange = model.getFullModelRange();
+    editor.pushUndoStop();
+    editor.executeEdits('clear-editor', [{
+      range: fullRange,
+      text: '',
+      forceMoveMarkers: true
+    }]);
+    editor.pushUndoStop();
     editor.focus();
+  }
+
+  export function undo() {
+    if (!editor) return;
+    editor.trigger('toolbar', 'undo', null);
+    editor.focus();
+  }
+
+  export function redo() {
+    if (!editor) return;
+    editor.trigger('toolbar', 'redo', null);
+    editor.focus();
+  }
+
+  export function setCode(newCode) {
+    code = newCode;
+    if (editor) {
+      const model = editor.getModel();
+      if (model) {
+        const fullRange = model.getFullModelRange();
+        editor.pushUndoStop();
+        editor.executeEdits('set-code', [{
+          range: fullRange,
+          text: newCode,
+          forceMoveMarkers: true
+        }]);
+        editor.pushUndoStop();
+      } else {
+        editor.setValue(newCode);
+      }
+      editor.focus();
+    }
+  }
+
+  export function getCode() {
+    return editor ? editor.getValue() : code;
   }
 
   onMount(() => {
@@ -396,7 +452,37 @@
         </svg>
       </button>
 
-      <button class="btn-tool-icon" on:click={clearEditor} title="Clear Editor">
+      <button class="btn-tool-icon" on:click={onOpenImport} title="Import SQL File (*.sql)..." aria-label="Import SQL File">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="7 10 12 15 17 10"></polyline>
+          <line x1="12" y1="15" x2="12" y2="3"></line>
+        </svg>
+      </button>
+
+      <button class="btn-tool-icon" on:click={onOpenExport} title="Export SQL Script (*.sql)..." aria-label="Export SQL Script">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="17 8 12 3 7 8"></polyline>
+          <line x1="12" y1="3" x2="12" y2="15"></line>
+        </svg>
+      </button>
+
+      <button class="btn-tool-icon" on:click={undo} title="Undo (Ctrl+Z)" aria-label="Undo">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 7v6h6"></path>
+          <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"></path>
+        </svg>
+      </button>
+
+      <button class="btn-tool-icon" on:click={redo} title="Redo (Ctrl+Y)" aria-label="Redo">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 7v6h-6"></path>
+          <path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"></path>
+        </svg>
+      </button>
+
+      <button class="btn-tool-icon" on:click={clearEditor} title="Clear Editor (Undoable with Ctrl+Z)" aria-label="Clear Editor">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <polyline points="3 6 5 6 21 6"></polyline>
           <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>

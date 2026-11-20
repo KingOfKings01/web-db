@@ -1,11 +1,14 @@
 <script>
   import { databasesStore, activeDatabaseStore, oracleDb } from '../lib/db-store.js';
+  import { downloadFile } from '../lib/file-utils.js';
 
   export let collapsed = false;
   export let width = 260;
   export let onToggleCollapse = () => {};
   export let onInsertText = (text) => {};
   export let onOpenNewConnection = () => {};
+  export let onOpenExport = (scope, name, dbKey) => {};
+  export let onOpenImport = (dbKey) => {};
 
   // Track expanded nodes in tree
   let isRootExpanded = true;
@@ -148,6 +151,24 @@
     handleRefresh();
   }
 
+  function handleDbExport() {
+    const db = contextMenuTarget;
+    closeContextMenu();
+    if (db) {
+      const dbKey = Object.keys($databasesStore).find(k => $databasesStore[k]?.name === db.name) || db.name;
+      onOpenExport('database', db.name, dbKey);
+    }
+  }
+
+  function handleDbImport() {
+    const db = contextMenuTarget;
+    closeContextMenu();
+    if (db) {
+      const dbKey = Object.keys($databasesStore).find(k => $databasesStore[k]?.name === db.name) || db.name;
+      onOpenImport(dbKey);
+    }
+  }
+
   function handleDbRename() {
     const db = contextMenuTarget;
     closeContextMenu();
@@ -196,6 +217,23 @@
     const { tableName } = contextMenuTarget;
     closeContextMenu();
     onInsertText(`SELECT COUNT(*) AS total_rows FROM ${tableName.toLowerCase()};\n`);
+  }
+
+  function handleTableExportSql() {
+    const { dbKey, tableName } = contextMenuTarget;
+    closeContextMenu();
+    onOpenExport('table', tableName, dbKey);
+  }
+
+  function handleTableExportCsv() {
+    const { dbKey, tableName } = contextMenuTarget;
+    closeContextMenu();
+    try {
+      const csv = oracleDb.exportTableToCsv(tableName, dbKey);
+      downloadFile(`${tableName.toLowerCase()}.csv`, csv, 'text/csv;charset=utf-8');
+    } catch (err) {
+      alert(err.message || String(err));
+    }
   }
 
   function handleTableRename() {
@@ -287,6 +325,34 @@
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="3">
           <line x1="12" y1="5" x2="12" y2="19"></line>
           <line x1="5" y1="12" x2="19" y2="12"></line>
+        </svg>
+      </button>
+
+      <!-- Import SQL Script Button -->
+      <button 
+        class="btn-icon-action" 
+        on:click={() => onOpenImport($activeDatabaseStore)} 
+        title="Import SQL Script / Data..."
+        aria-label="Import SQL"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0284c7" stroke-width="2.2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="7 10 12 15 17 10"></polyline>
+          <line x1="12" y1="15" x2="12" y2="3"></line>
+        </svg>
+      </button>
+
+      <!-- Export Database SQL Button -->
+      <button 
+        class="btn-icon-action" 
+        on:click={() => onOpenExport('database', '', $activeDatabaseStore)} 
+        title="Export Database SQL..."
+        aria-label="Export Database"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2.2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="17 8 12 3 7 8"></polyline>
+          <line x1="12" y1="3" x2="12" y2="15"></line>
         </svg>
       </button>
 
@@ -508,6 +574,16 @@
 
       <div class="menu-divider"></div>
 
+      <button class="menu-item" on:click={handleDbExport}>
+        <span class="menu-icon">📤</span> Export Database (SQL)...
+      </button>
+
+      <button class="menu-item" on:click={handleDbImport}>
+        <span class="menu-icon">📥</span> Import SQL Script...
+      </button>
+
+      <div class="menu-divider"></div>
+
       <button class="menu-item" on:click={handleDbRename}>
         <span class="menu-icon">✏️</span> Rename Connection...
       </button>
@@ -531,6 +607,16 @@
 
       <button class="menu-item" on:click={handleTableCount}>
         <span class="menu-icon">🔢</span> Count Rows
+      </button>
+
+      <div class="menu-divider"></div>
+
+      <button class="menu-item" on:click={handleTableExportSql}>
+        <span class="menu-icon">📤</span> Export Table (SQL)...
+      </button>
+
+      <button class="menu-item" on:click={handleTableExportCsv}>
+        <span class="menu-icon">📊</span> Export Table (CSV)...
       </button>
 
       <div class="menu-divider"></div>

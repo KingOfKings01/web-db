@@ -413,6 +413,212 @@ export class OracleDatabase {
     return { type: 'DDL', message: `Disconnected from ${dbName}.` };
   }
 
+  // =========================================================
+  // SQL Developer Import / Export Helpers
+  // =========================================================
+
+  formatSqlValue(val) {
+    if (val === null || val === undefined) return 'NULL';
+    if (typeof val === 'number') return String(val);
+    if (typeof val === 'boolean') return val ? '1' : '0';
+    return `'${String(val).replace(/'/g, "''")}'`;
+  }
+
+  exportTableToSql(tableName, options = {}, dbKey = null) {
+    this.ensureDatabases();
+    const active = (dbKey || this.db.activeDatabase || 'SQL_CLASS').toUpperCase();
+    const targetTables = this.db.databases[active] ? this.db.databases[active].tables : this.db.tables;
+    const upper = (tableName || '').toUpperCase().trim();
+    const table = targetTables?.[upper];
+
+    if (!table) {
+      throw new OracleError('ORA-00942', `table or view '${tableName}' does not exist`);
+    }
+
+    const {
+      includeDdl = true,
+      includeData = true,
+      includeDrop = false,
+      includeCommit = true
+    } = options;
+
+    const lines = [];
+    const dateStr = new Date().toLocaleString();
+
+    lines.push(`--------------------------------------------------------`);
+    lines.push(`--  Oracle SQL Developer Export: Table ${upper}`);
+    lines.push(`--  Database: ${active}`);
+    lines.push(`--  Export Date: ${dateStr}`);
+    lines.push(`--------------------------------------------------------\n`);
+
+    if (includeDrop) {
+      lines.push(`-- Drop table if exists`);
+      lines.push(`DROP TABLE "${upper}";\n`);
+    }
+
+    if (includeDdl) {
+      lines.push(`--------------------------------------------------------`);
+      lines.push(`--  DDL for Table ${upper}`);
+      lines.push(`--------------------------------------------------------`);
+      lines.push(`CREATE TABLE "${upper}" (`);
+      const colDefs = (table.columns || []).map(col => {
+        let def = `    "${col.name}" ${col.type || 'VARCHAR2(100)'}`;
+        if (col.isPk) {
+          def += ' PRIMARY KEY';
+        } else if (col.nullable === false) {
+          def += ' NOT NULL';
+        }
+        return def;
+      });
+      lines.push(colDefs.join(',\n'));
+      lines.push(`);\n`);
+    }
+
+    if (includeData && Array.isArray(table.rows) && table.rows.length > 0) {
+      lines.push(`--------------------------------------------------------`);
+      lines.push(`--  DML for Table ${upper} (Data)`);
+      lines.push(`--------------------------------------------------------`);
+      lines.push(`REM INSERTING into ${upper}`);
+      lines.push(`SET DEFINE OFF;`);
+      const colNames = (table.columns || []).map(c => `"${c.name}"`).join(', ');
+      for (const row of table.rows) {
+        const valList = (table.columns || []).map(c => this.formatSqlValue(row[c.name]));
+        lines.push(`Insert into "${upper}" (${colNames}) values (${valList.join(', ')});`);
+      }
+      lines.push('');
+    }
+
+    if (includeCommit) {
+      lines.push(`COMMIT;\n`);
+    }
+
+    return lines.join('\n');
+  }
+
+  exportDatabaseToSql(options = {}, dbKey = null) {
+    this.ensureDatabases();
+    const active = (dbKey || this.db.activeDatabase || 'SQL_CLASS').toUpperCase();
+    const dbObj = this.db.databases[active];
+    const targetTables = dbObj ? dbObj.tables : this.db.tables;
+
+    const {
+      includeDdl = true,
+      includeData = true,
+      includeDrop = false,
+      includeCommit = true
+    } = options;
+
+    const lines = [];
+    const dateStr = new Date().toLocaleString();
+    const dbName = dbObj ? dbObj.name : active;
+    const dbUser = dbObj?.username || 'STUDENT';
+    const dbPass = dbObj?.password || 'password';
+
+    lines.push(`--------------------------------------------------------`);
+    lines.push(`--  Oracle SQL Developer Database Export`);
+    lines.push(`--  Database: ${dbName}`);
+    lines.push(`--  User: ${dbUser}`);
+    lines.push(`--  Export Date: ${dateStr}`);
+    lines.push(`--------------------------------------------------------\n`);
+
+    lines.push(`-- Connect to database`);
+    lines.push(`CONNECT ${dbUser}/${dbPass}@${dbName};\n`);
+
+    const tableEntries = Object.entries(targetTables || {}).filter(([name]) => name !== 'DUAL');
+
+    if (tableEntries.length === 0) {
+      lines.push(`-- No user tables found in database ${dbName}.\n`);
+    } else {
+      for (const [tableName] of tableEntries) {
+        const tableSql = this.exportTableToSql(tableName, {
+          includeDdl,
+          includeData,
+          includeDrop,
+          includeCommit: false
+        }, active);
+        lines.push(tableSql);
+      }
+    }
+
+    if (includeCommit) {
+      lines.push(`COMMIT;\n`);
+    }
+
+    return lines.join('\n');
+  }
+
+  exportTableToCsv(tableName, dbKey = null) {
+    this.ensureDatabases();
+    const active = (dbKey || this.db.activeDatabase || 'SQL_CLASS').toUpperCase();
+    const targetTables = this.db.databases[active] ? this.db.databases[active].tables : this.db.tables;
+    const upper = (tableName || '').toUpperCase().trim();
+    const table = targetTables?.[upper];
+
+    if (!table) {
+      throw new OracleError('ORA-00942', `table or view '${tableName}' does not exist`);
+    }
+
+    const cols = table.columns || [];
+    const header = cols.map(c => `"${c.name.replace(/"/g, '""')}"`).join(',');
+    const rows = (table.rows || []).map(row => {
+      return cols.map(c => {
+        const val = row[c.name];
+        if (val === null || val === undefined) return '';
+        const str = String(val);
+        if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+          return `"${str.replace(/"/g, '""')}"`;
+        }
+        return str;
+      }).join(',');
+    });
+
+    return [header, ...rows].join('\r\n');
+  }
+
+  importCsvToTable(tableName, csvText, dbKey = null) {
+    this.ensureDatabases();
+    const active = (dbKey || this.db.activeDatabase || 'SQL_CLASS').toUpperCase();
+    const targetTables = this.db.databases[active] ? this.db.databases[active].tables : this.db.tables;
+    const upper = (tableName || '').toUpperCase().trim();
+    if (!targetTables[upper]) {
+      throw new OracleError('ORA-00942', `table or view '${tableName}' does not exist`);
+    }
+
+    const lines = csvText.trim().split(/\r?\n/).filter(line => line.trim().length > 0);
+    if (lines.length <= 1) {
+      return { inserted: 0, message: 'CSV has no data rows.' };
+    }
+
+    const headers = lines[0].split(',').map(h => h.trim().replace(/^["']|["']$/g, '').toUpperCase());
+    const table = targetTables[upper];
+    let inserted = 0;
+
+    for (let i = 1; i < lines.length; i++) {
+      const parts = lines[i].split(',').map(p => p.trim().replace(/^["']|["']$/g, ''));
+      const row = {};
+      headers.forEach((h, idx) => {
+        if (idx < parts.length) {
+          const colDef = table.columns.find(c => c.name.toUpperCase() === h);
+          const rawVal = parts[idx];
+          if (colDef && colDef.type.startsWith('NUM')) {
+            row[h] = isNaN(Number(rawVal)) ? rawVal : Number(rawVal);
+          } else {
+            row[h] = rawVal === '' ? null : rawVal;
+          }
+        }
+      });
+      table.rows.push(row);
+      inserted++;
+    }
+
+    this.notifyChange();
+    return {
+      type: 'DML',
+      inserted,
+      message: `${inserted} row(s) imported into ${upper}.`
+    };
+  }
+
   getTables() {
     this.ensureDatabases();
     const active = (this.db.activeDatabase || 'SQL_CLASS').toUpperCase();
