@@ -298,6 +298,113 @@ const sampleCsv = `ITEM_ID,ITEM_NAME,QTY
 const csvRes = db.importCsvToTable('INVENTORY', sampleCsv);
 assertTest('importCsvToTable imports CSV rows', csvRes.inserted === 3 && db.getTable('INVENTORY').rows.length === 3);
 
+// 17. Column Alias & Expression Syntax Tests (Oracle standard)
+const singleQuoteAliasRes1 = db.executeScript("SELECT (1+1 AS 'Result') FROM dual;");
+assertTest("SELECT (1+1 AS 'Result') throws ORA-00923", singleQuoteAliasRes1[0].type === 'ERROR' && singleQuoteAliasRes1[0].error.code === 'ORA-00923');
+
+const singleQuoteAliasRes2 = db.executeScript("SELECT 1+1 AS 'Result' FROM dual;");
+assertTest("SELECT 1+1 AS 'Result' throws ORA-00923", singleQuoteAliasRes2[0].type === 'ERROR' && singleQuoteAliasRes2[0].error.code === 'ORA-00923');
+
+const singleQuoteAliasRes3 = db.executeScript("SELECT 1+1 'Result' FROM dual;");
+assertTest("SELECT 1+1 'Result' without AS throws ORA-00923", singleQuoteAliasRes3[0].type === 'ERROR' && singleQuoteAliasRes3[0].error.code === 'ORA-00923');
+
+const invalidParenAsRes = db.executeScript('SELECT (1+1 AS "Result") FROM dual;');
+assertTest('SELECT (1+1 AS "Result") throws ORA-00907', invalidParenAsRes[0].type === 'ERROR' && invalidParenAsRes[0].error.code === 'ORA-00907');
+
+const doubleQuoteRes = db.executeScript('SELECT (1+1) AS "Result" FROM dual;');
+assertTest('SELECT (1+1) AS "Result" preserves case-sensitive alias and calculates 2', doubleQuoteRes[0].columns[0] === 'Result' && doubleQuoteRes[0].rows[0]['Result'] === 2);
+
+const unquotedAliasRes = db.executeScript('SELECT 1+1 AS Result FROM dual;');
+assertTest('SELECT 1+1 AS Result converts alias to uppercase RESULT', unquotedAliasRes[0].columns[0] === 'RESULT' && unquotedAliasRes[0].rows[0]['RESULT'] === 2);
+
+// 18. Trailing comma syntax validation, String Arithmetic, and Floating-Point Decimal Precision
+const trailingCommaRes = db.executeScript("SELECT 1+1 AS Add,\nFROM dual;");
+assertTest('Trailing comma before FROM throws ORA-00936', trailingCommaRes[0].type === 'ERROR' && trailingCommaRes[0].error.code === 'ORA-00936');
+
+const stringArithmeticRes = db.executeScript("SELECT '1'+'1' AS total_sum FROM dual;");
+assertTest("SELECT '1'+'1' performs arithmetic addition and evaluates to 2", stringArithmeticRes[0].rows[0]['TOTAL_SUM'] === 2);
+
+const invalidStringArithmeticRes = db.executeScript("SELECT 'abc' + 1 FROM dual;");
+assertTest("SELECT 'abc' + 1 throws ORA-01722 (invalid number)", invalidStringArithmeticRes[0].type === 'ERROR' && invalidStringArithmeticRes[0].error.code === 'ORA-01722');
+
+const reservedAliasRes1 = db.executeScript("SELECT '1' + '1' AS values FROM dual;");
+assertTest("SELECT with reserved word alias AS values throws ORA-00923", reservedAliasRes1[0].type === 'ERROR' && reservedAliasRes1[0].error.code === 'ORA-00923');
+
+const reservedAliasRes2 = db.executeScript("SELECT '1' + '1' values FROM dual;");
+assertTest("SELECT with reserved word alias without AS (values) throws ORA-00923", reservedAliasRes2[0].type === 'ERROR' && reservedAliasRes2[0].error.code === 'ORA-00923');
+
+const quotedReservedAliasRes = db.executeScript('SELECT \'1\' + \'1\' AS "values" FROM dual;');
+assertTest('SELECT with double-quoted reserved word AS "values" succeeds', quotedReservedAliasRes[0].columns[0] === 'values' && quotedReservedAliasRes[0].rows[0]['values'] === 2);
+
+const decimalCalcRes = db.executeScript(`SELECT 
+  276 AS real_price, 
+  -(276 - 276 * 0.90) AS descount, 
+  276 * 0.90 AS descount_price, 
+  276 * 1.08 - 276 AS GST,
+  276 * 0.90 + (276 * 1.08 - 276) AS total
+FROM dual;`);
+assertTest('Decimal calculation normalizes floating-point artifacts (-27.6, 22.08, 270.48)', 
+  decimalCalcRes[0].rows[0]['DESCOUNT'] === -27.6 && 
+  decimalCalcRes[0].rows[0]['GST'] === 22.08 && 
+  decimalCalcRes[0].rows[0]['TOTAL'] === 270.48 &&
+  decimalCalcRes[0].rows[0]['DESCOUNT_PRICE'] === 248.4);
+
+// 19. Unary operators on functions and embedded functions in arithmetic
+const negAbsRes = db.executeScript("SELECT -ABS(fee) AS neg_fee FROM courses;");
+assertTest("SELECT -ABS(fee) evaluates to negative numbers (-500, -600, -400)", 
+  negAbsRes[0].rows[0]['NEG_FEE'] === -500 && 
+  negAbsRes[0].rows[1]['NEG_FEE'] === -600 && 
+  negAbsRes[0].rows[2]['NEG_FEE'] === -400);
+
+const arithFuncRes = db.executeScript("SELECT 1000 - ABS(fee) AS diff FROM courses;");
+assertTest("SELECT 1000 - ABS(fee) evaluates nested arithmetic with function", arithFuncRes[0].rows[0]['DIFF'] === 500);
+
+// 20. Oracle SQL standard function rules (NULL handling, MOD(n, 0), math functions)
+const modZeroRes = db.executeScript("SELECT MOD(11, 0) AS m FROM dual;");
+assertTest("MOD(11, 0) returns 11 per Oracle specification", modZeroRes[0].rows[0]['M'] === 11);
+
+const nullArithRes = db.executeScript("SELECT 10 + NULL AS s1, ABS(NULL) AS s2 FROM dual;");
+assertTest("Arithmetic and math functions with NULL evaluate to NULL", nullArithRes[0].rows[0]['S1'] === null && nullArithRes[0].rows[0]['S2'] === null);
+
+const mathSuiteRes = db.executeScript("SELECT SIGN(-15) AS sn, CEIL(15.2) AS cl, FLOOR(15.8) AS fl, SQRT(25) AS sq, POWER(2, 3) AS pw FROM dual;");
+assertTest("SIGN, CEIL, FLOOR, SQRT, POWER functions execute accurately", 
+  mathSuiteRes[0].rows[0]['SN'] === -1 && 
+  mathSuiteRes[0].rows[0]['CL'] === 16 && 
+  mathSuiteRes[0].rows[0]['FL'] === 15 && 
+  mathSuiteRes[0].rows[0]['SQ'] === 5 && 
+  mathSuiteRes[0].rows[0]['PW'] === 8);
+
+
+// 21. Adjacent terms syntax validation (ORA-00923: FROM keyword not found where expected)
+const adjRes1 = db.executeScript("SELECT 11 ABS(-10) FROM dual;");
+assertTest("SELECT 11 ABS(-10) throws ORA-00923", adjRes1[0].type === 'ERROR' && adjRes1[0].error.code === 'ORA-00923');
+
+const adjRes2 = db.executeScript("SELECT 11 22 FROM dual;");
+assertTest("SELECT 11 22 throws ORA-00923", adjRes2[0].type === 'ERROR' && adjRes2[0].error.code === 'ORA-00923');
+
+const adjRes3 = db.executeScript("SELECT 11 AS 22 FROM dual;");
+assertTest("SELECT 11 AS 22 throws ORA-00923 (unquoted alias starting with digit)", adjRes3[0].type === 'ERROR' && adjRes3[0].error.code === 'ORA-00923');
+
+const adjRes4 = db.executeScript("SELECT 11 AS ABS(-10) FROM dual;");
+assertTest("SELECT 11 AS ABS(-10) throws ORA-00923 (invalid alias after AS)", adjRes4[0].type === 'ERROR' && adjRes4[0].error.code === 'ORA-00923');
+
+const adjRes5 = db.executeScript("SELECT 11 + ABS(-10) AS res FROM dual;");
+assertTest("SELECT 11 + ABS(-10) evaluates to 21", adjRes5[0].rows[0]['RES'] === 21);
+
+const adjRes6 = db.executeScript("SELECT 11 total FROM dual;");
+assertTest("SELECT 11 total evaluates implicit alias TOTAL", adjRes6[0].columns[0] === 'TOTAL' && adjRes6[0].rows[0]['TOTAL'] === 11);
+
+const adjRes7 = db.executeScript("SELECT 11 AS total FROM dual;");
+assertTest("SELECT 11 AS total evaluates explicit alias TOTAL", adjRes7[0].columns[0] === 'TOTAL' && adjRes7[0].rows[0]['TOTAL'] === 11);
+
+// 22. Unresolved identifiers and invalid number conversion in arithmetic expressions
+const invalidColArith = db.executeScript("SELECT 11 + AB FROM dual;");
+assertTest("SELECT 11 + AB FROM dual throws ORA-00904 (invalid identifier)", invalidColArith[0].type === 'ERROR' && invalidColArith[0].error.code === 'ORA-00904');
+
+const invalidNumArith = db.executeScript("SELECT 11 + dummy FROM dual;");
+assertTest("SELECT 11 + dummy FROM dual throws ORA-01722 (invalid number due to 'X')", invalidNumArith[0].type === 'ERROR' && invalidNumArith[0].error.code === 'ORA-01722');
+
+
 console.log('==============================================');
 console.log(`  Tests Passed: ${passedCount} / ${totalCount}`);
 console.log('==============================================');

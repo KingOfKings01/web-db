@@ -887,20 +887,8 @@
 
   function fitScale() {
     if (!devEl) return;
-    if (layoutMode === 'landscape') {
-      const clientW = document.documentElement.clientWidth;
-      if (clientW < 860) {
-        const s = Math.min(1, Math.max(0.40, (clientW - 12) / 844));
-        devEl.style.transform = `scale(${s})`;
-        devEl.style.marginBottom = `${-(390 * (1 - s))}px`;
-      } else {
-        devEl.style.transform = '';
-        devEl.style.marginBottom = '';
-      }
-    } else {
-      devEl.style.transform = '';
-      devEl.style.marginBottom = '';
-    }
+    devEl.style.transform = '';
+    devEl.style.marginBottom = '';
   }
 
   function onFullscreenChange() {
@@ -2035,14 +2023,14 @@
     height: 100vh;
     height: 100dvh;
     display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--pg, #e9edf3);
-    padding: 4px;
-    padding-top: max(4px, env(safe-area-inset-top, 0px));
-    padding-bottom: max(4px, env(safe-area-inset-bottom, 0px));
-    padding-left: max(4px, env(safe-area-inset-left, 0px));
-    padding-right: max(4px, env(safe-area-inset-right, 0px));
+    align-items: stretch;
+    justify-content: stretch;
+    background: var(--bg);
+    padding: 0;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
     box-sizing: border-box;
     overflow: hidden;
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -2239,33 +2227,44 @@
     border-radius: 999px;
   }
 
-  /* DEVICE CONTAINER */
+  /* DEVICE CONTAINER - FULLSCREEN & RESPONSIVE */
   .dev {
     display: flex;
     flex-direction: column;
     background: var(--bg);
     color: var(--fg);
-    border: 1px solid var(--bd);
-    border-radius: 14px;
-    overflow: visible;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+    border: none;
+    border-radius: 0;
+    overflow: hidden;
+    box-shadow: none;
+    width: 100%;
+    height: 100%;
+    max-width: 100%;
+    max-height: 100%;
+    flex: 1;
+    min-height: 0;
+    box-sizing: border-box;
   }
 
   /* Landscape dev styling */
   .dev.landscape {
-    width: 844px;
-    height: 390px;
-    transform-origin: center center;
-    flex-shrink: 0;
+    width: 100%;
+    height: 100%;
+    max-width: 100%;
+    max-height: 100%;
+    flex: 1;
+    min-height: 0;
   }
 
   /* Vertical dev styling */
   .dev.vertical {
     width: 100%;
-    max-width: min(640px, 100%);
+    max-width: 100%;
     height: 100%;
     max-height: 100%;
-    border-radius: 10px;
+    border-radius: 0;
+    flex: 1;
+    min-height: 0;
     box-sizing: border-box;
   }
 
@@ -2481,11 +2480,12 @@
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: 180px 1fr 210px;
+    grid-template-columns: clamp(170px, 22vw, 280px) 1fr clamp(200px, 26vw, 320px);
     gap: 6px;
     padding: 6px;
     background: var(--pn);
     transition: grid-template-columns 0.22s ease;
+    box-sizing: border-box;
   }
 
   .landscape-main.hide {
@@ -2495,8 +2495,11 @@
 
   .side {
     min-height: 0;
+    height: 100%;
     overflow: hidden;
     transition: opacity 0.15s;
+    display: flex;
+    flex-direction: column;
   }
 
   .landscape-main.hide .side {
@@ -2508,8 +2511,9 @@
     display: grid;
     gap: 4px;
     height: 100%;
-    align-content: end;
-    grid-template-rows: repeat(5, 58px);
+    width: 100%;
+    align-content: stretch;
+    grid-template-rows: repeat(5, minmax(0, 1fr));
   }
 
   .kb.l { grid-template-columns: repeat(5, 1fr); }

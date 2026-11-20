@@ -140,6 +140,29 @@ export class OracleError extends Error {
   }
 }
 
+export const ORACLE_RESERVED_WORDS = new Set([
+  'ACCESS', 'ADD', 'ALL', 'ALTER', 'AND', 'ANY', 'AS', 'ASC', 'AUDIT',
+  'BETWEEN', 'BY',
+  'CHAR', 'CHECK', 'CLUSTER', 'COLUMN', 'COMMENT', 'COMPRESS', 'CONNECT', 'CREATE', 'CURRENT',
+  'DATE', 'DECIMAL', 'DEFAULT', 'DELETE', 'DESC', 'DISTINCT', 'DROP',
+  'ELSE', 'EXCLUSIVE', 'EXISTS',
+  'FILE', 'FLOAT', 'FOR', 'FROM',
+  'GRANT', 'GROUP',
+  'HAVING',
+  'IDENTIFIED', 'IMMEDIATE', 'IN', 'INCREMENT', 'INDEX', 'INITIAL', 'INSERT', 'INTEGER', 'INTERSECT', 'INTO', 'IS',
+  'LEVEL', 'LIKE', 'LOCK', 'LONG',
+  'MAXEXTENTS', 'MINUS', 'MODE', 'MODIFY',
+  'NOAUDIT', 'NOCOMPRESS', 'NOT', 'NOWAIT', 'NULL', 'NUMBER',
+  'OF', 'OFF', 'OFFLINE', 'ON', 'ONLINE', 'OPTION', 'OR', 'ORDER',
+  'PCTFREE', 'PRIMARY', 'PRIOR', 'PRIVILEGES', 'PUBLIC',
+  'RAW', 'RENAME', 'RESOURCE', 'REVOKE', 'ROW', 'ROWID', 'ROWNUM', 'ROWS',
+  'SELECT', 'SESSION', 'SET', 'SHARE', 'SIZE', 'SMALLINT', 'START', 'SUCCESSFUL', 'SYNONYM', 'SYSDATE',
+  'TABLE', 'THEN', 'TO', 'TRIGGER',
+  'UID', 'UNION', 'UNIQUE', 'UPDATE', 'USER',
+  'VALIDATE', 'VALUES', 'VARCHAR', 'VARCHAR2', 'VIEW',
+  'WHENEVER', 'WHERE', 'WITH'
+]);
+
 export class OracleDatabase {
   constructor() {
     this.db = this.loadFromStorage();
@@ -2013,6 +2036,19 @@ export class OracleDatabase {
     const orderByPart = match[7] ? match[7].trim() : null;
     const fetchFirst = match[8] ? parseInt(match[8], 10) : null;
 
+    if (fromPart.startsWith(',') || fromPart.endsWith(',')) {
+      throw new OracleError('ORA-00903', 'invalid table name');
+    }
+    if (wherePart && (wherePart.startsWith(',') || wherePart.endsWith(','))) {
+      throw new OracleError('ORA-00936', 'missing expression');
+    }
+    if (groupByPart && (groupByPart.startsWith(',') || groupByPart.endsWith(','))) {
+      throw new OracleError('ORA-00936', 'missing expression');
+    }
+    if (orderByPart && (orderByPart.startsWith(',') || orderByPart.endsWith(','))) {
+      throw new OracleError('ORA-00936', 'missing expression');
+    }
+
     let rownumLimit = null;
     if (wherePart) {
       const rownumMatch = wherePart.match(/\bROWNUM\s*(?:<=|<|=)\s*(\d+)\b/i);
@@ -2262,35 +2298,289 @@ export class OracleDatabase {
     return { tableName, alias };
   }
 
+  findTopLevelAs(expr) {
+    let i = 0;
+    while (i < expr.length) {
+      if (expr[i] === "'") {
+        i++;
+        while (i < expr.length) {
+          if (expr[i] === "'") {
+            i++;
+            if (i < expr.length && expr[i] === "'") i++;
+            else break;
+          } else {
+            i++;
+          }
+        }
+        continue;
+      }
+      if (expr[i] === '"') {
+        i++;
+        while (i < expr.length && expr[i] !== '"') i++;
+        if (i < expr.length) i++;
+        continue;
+      }
+      if (expr[i] === '(') {
+        let depth = 1;
+        i++;
+        let inQuote = false;
+        while (i < expr.length && depth > 0) {
+          if (expr[i] === "'") inQuote = !inQuote;
+          else if (!inQuote) {
+            if (expr[i] === '(') depth++;
+            else if (expr[i] === ')') depth--;
+          }
+          i++;
+        }
+        continue;
+      }
+      if ((i === 0 || /\s/.test(expr[i - 1])) && expr.slice(i, i + 2).toUpperCase() === 'AS' && (i + 2 === expr.length || /\s/.test(expr[i + 2]))) {
+        return { index: i, length: 2 };
+      }
+      i++;
+    }
+    return null;
+  }
+
+  hasInvalidAdjacentTerms(expr) {
+    if (!expr) return false;
+    const tokens = [];
+    let i = 0;
+    const str = expr.trim();
+
+    while (i < str.length) {
+      if (/\s/.test(str[i])) {
+        i++;
+        continue;
+      }
+
+      // Single-quoted string literal '...'
+      if (str[i] === "'") {
+        i++;
+        while (i < str.length) {
+          if (str[i] === "'") {
+            i++;
+            if (i < str.length && str[i] === "'") i++;
+            else break;
+          } else {
+            i++;
+          }
+        }
+        tokens.push('TERM');
+        continue;
+      }
+
+      // Double-quoted identifier "..."
+      if (str[i] === '"') {
+        i++;
+        while (i < str.length && str[i] !== '"') i++;
+        if (i < str.length) i++;
+        tokens.push('TERM');
+        continue;
+      }
+
+      // Parentheses ( ... )
+      if (str[i] === '(') {
+        let depth = 1;
+        const start = i + 1;
+        i++;
+        let inQuote = false;
+        while (i < str.length && depth > 0) {
+          if (str[i] === "'") inQuote = !inQuote;
+          else if (!inQuote) {
+            if (str[i] === '(') depth++;
+            else if (str[i] === ')') depth--;
+          }
+          i++;
+        }
+        const inner = str.slice(start, i - 1).trim();
+        if (!/^SELECT\b/i.test(inner)) {
+          const parts = this.splitCommaExpressions(inner);
+          for (const p of parts) {
+            if (this.hasInvalidAdjacentTerms(p.trim())) return true;
+          }
+        }
+        tokens.push('TERM');
+        continue;
+      }
+
+      // Concatenation operator ||
+      if (str.startsWith('||', i)) {
+        tokens.push('OP');
+        i += 2;
+        continue;
+      }
+
+      // Binary / comparison operators
+      if (str.startsWith('!=', i) || str.startsWith('<>', i) || str.startsWith('<=', i) || str.startsWith('>=', i) || str.startsWith(':=', i)) {
+        tokens.push('OP');
+        i += 2;
+        continue;
+      }
+
+      if (['+', '-', '*', '/', '=', '<', '>', '~', '^', '%', '&', '|'].includes(str[i])) {
+        tokens.push('OP');
+        i++;
+        continue;
+      }
+
+      // Word: identifier, number, keyword, or function name
+      const wordMatch = str.slice(i).match(/^[a-zA-Z0-9_$#.]+/);
+      if (wordMatch) {
+        const word = wordMatch[0];
+        i += word.length;
+        let j = i;
+        while (j < str.length && /\s/.test(str[j])) j++;
+        if (j < str.length && str[j] === '(') {
+          let depth = 1;
+          const funcStart = j + 1;
+          j++;
+          let inQuote = false;
+          while (j < str.length && depth > 0) {
+            if (str[j] === "'") inQuote = !inQuote;
+            else if (!inQuote) {
+              if (str[j] === '(') depth++;
+              else if (str[j] === ')') depth--;
+            }
+            j++;
+          }
+          const funcArgs = str.slice(funcStart, j - 1).trim();
+          if (funcArgs) {
+            const parts = this.splitCommaExpressions(funcArgs);
+            for (const p of parts) {
+              if (this.hasInvalidAdjacentTerms(p.trim())) return true;
+            }
+          }
+          i = j;
+          tokens.push('TERM');
+          continue;
+        }
+
+        if (/^(AND|OR|NOT|LIKE|IN|IS|BETWEEN|ESCAPE|CASE|WHEN|THEN|ELSE|END|DISTINCT|ALL)$/i.test(word)) {
+          tokens.push('OP');
+        } else {
+          tokens.push('TERM');
+        }
+        continue;
+      }
+
+      i++;
+    }
+
+    for (let k = 0; k < tokens.length - 1; k++) {
+      if (tokens[k] === 'TERM' && tokens[k + 1] === 'TERM') {
+        return true;
+      }
+    }
+    return false;
+  }
+
   parseSelectColumns(colsStr) {
     if (colsStr.trim() === '*') {
       return [{ expr: '*', alias: '*', isWildcard: true, isAggregate: false }];
+    }
+
+    const trimmedCols = colsStr.trim();
+    if (trimmedCols.startsWith(',') || trimmedCols.endsWith(',')) {
+      throw new OracleError('ORA-00936', 'missing expression');
     }
 
     const items = this.splitCommaExpressions(colsStr);
     const parsed = [];
 
     for (const item of items) {
+      if (!item.trim()) {
+        throw new OracleError('ORA-00936', 'missing expression');
+      }
       let expr = item.trim();
       let alias = null;
 
-      const asMatch = expr.match(/^([\s\S]+?)\s+AS\s+([a-zA-Z0-9_$#]+|"[\s\S]+?")$/i);
-      if (asMatch) {
-        expr = asMatch[1].trim();
-        alias = asMatch[2].replace(/^"|"$/g, '').toUpperCase();
-      } else {
-        const spaceMatch = expr.match(/^([\s\S]+)\s+([a-zA-Z0-9_$#]+)$/i);
-        if (spaceMatch && !/^[A-Z_]+\s*\(.*?\)$/i.test(expr)) {
-          expr = spaceMatch[1].trim();
-          alias = spaceMatch[2].toUpperCase();
+      // In Oracle, single quotes are string literals and CANNOT be used as column aliases.
+      // E.g.: SELECT 1+1 AS 'Result' FROM dual OR SELECT (1+1 AS 'Result') FROM dual
+      // Oracle throws ORA-00923: FROM keyword not found where expected
+      if (/\bAS\s+'[^']*'/i.test(expr)) {
+        throw new OracleError('ORA-00923', 'FROM keyword not found where expected');
+      }
+
+      // Check if alias is provided in single quotes without AS: e.g. SELECT 1+1 'Result' FROM dual
+      const trailingSingleQuoteAlias = expr.match(/^([\s\S]+?)\s+('[^']*')$/);
+      if (trailingSingleQuoteAlias) {
+        const preceding = trailingSingleQuoteAlias[1].trim();
+        const isOperatorEnding = /(?:[-+*/=<>!~|,]|\|\||\b(?:LIKE|IN|IS|AND|OR|NOT|THEN|ELSE|WHEN|CASE|BETWEEN))\s*$/i.test(preceding);
+        if (!isOperatorEnding) {
+          throw new OracleError('ORA-00923', 'FROM keyword not found where expected');
+        }
+      }
+
+      // Check for invalid syntax: AS inside parentheses for non-subquery / non-CAST expressions
+      // e.g. SELECT (1+1 AS Result) FROM dual; -> ORA-00907: missing right parenthesis
+      const invalidParenAs = expr.match(/^\s*\(\s*(?!SELECT\b|CAST\b)[\s\S]+?\bAS\b[\s\S]+?\)\s*$/i);
+      if (invalidParenAs) {
+        throw new OracleError('ORA-00907', 'missing right parenthesis');
+      }
+
+      // 1. Explicit AS alias: expr AS "alias" or expr AS alias
+      const topLevelAs = this.findTopLevelAs(expr);
+      if (topLevelAs) {
+        const left = expr.slice(0, topLevelAs.index).trim();
+        const right = expr.slice(topLevelAs.index + topLevelAs.length).trim();
+        if (!left) {
+          throw new OracleError('ORA-00936', 'missing expression');
+        }
+        if (!right || right.startsWith("'")) {
+          throw new OracleError('ORA-00923', 'FROM keyword not found where expected');
+        }
+        if (right.startsWith('"') && right.endsWith('"') && right.length >= 2) {
+          alias = right.slice(1, -1); // Case-sensitive: retain exact casing for double quotes!
+        } else if (/^[a-zA-Z][a-zA-Z0-9_$#]*$/.test(right)) {
+          if (ORACLE_RESERVED_WORDS.has(right.toUpperCase())) {
+            throw new OracleError('ORA-00923', 'FROM keyword not found where expected');
+          }
+          alias = right.toUpperCase();
         } else {
+          // If right is a number, function call, multiple words, etc.
+          throw new OracleError('ORA-00923', 'FROM keyword not found where expected');
+        }
+        expr = left;
+      } else {
+        // 2. Implicit alias without AS: expr "alias" or expr alias
+        // An unquoted alias MUST start with a letter: [a-zA-Z][a-zA-Z0-9_$#]*
+        // A quoted alias starts and ends with "..."
+        const spaceMatch = expr.match(/^([\s\S]+?)\s+([a-zA-Z][a-zA-Z0-9_$#]*|"[\s\S]+?")$/i);
+        const isAggOrFunc = /^[A-Z_]+\s*\(.*?\)$/i.test(expr);
+        if (spaceMatch && !isAggOrFunc) {
+          const preceding = spaceMatch[1].trim();
+          const rawAlias = spaceMatch[2].trim();
+          const isOperatorEnding = /(?:[-+*/=<>!~|,]|\|\||\b(?:LIKE|IN|IS|AND|OR|NOT|THEN|ELSE|WHEN|CASE|BETWEEN))\s*$/i.test(preceding);
+
+          if (!isOperatorEnding) {
+            if (rawAlias.startsWith('"') && rawAlias.endsWith('"')) {
+              expr = preceding;
+              alias = rawAlias.slice(1, -1); // Case-sensitive: retain exact casing!
+            } else if (ORACLE_RESERVED_WORDS.has(rawAlias.toUpperCase())) {
+              // In Oracle, using a reserved keyword as an unquoted alias without AS (e.g. SELECT 1 values FROM dual)
+              // causes Oracle to expect the FROM keyword and throw ORA-00923
+              throw new OracleError('ORA-00923', 'FROM keyword not found where expected');
+            } else {
+              expr = preceding;
+              alias = rawAlias.toUpperCase();
+            }
+          }
+        }
+
+        if (!alias) {
           const dotParts = expr.split('.');
           if (dotParts.length === 2 && /^[a-zA-Z0-9_$#]+$/.test(dotParts[1].trim())) {
             alias = dotParts[1].trim().toUpperCase();
           } else {
-            alias = expr.toUpperCase().replace(/\s+/g, '_');
+            alias = expr.toUpperCase().replace(/\s+/g, ' ');
           }
         }
+      }
+
+      // 3. Check for invalid adjacent terms in expr (e.g. SELECT 11 ABS(-10) FROM dual, SELECT 11 22 FROM dual)
+      if (this.hasInvalidAdjacentTerms(expr)) {
+        throw new OracleError('ORA-00923', 'FROM keyword not found where expected');
       }
 
       const isAgg = /\b(COUNT|SUM|AVG|MIN|MAX)\s*\(/i.test(expr);
@@ -2389,6 +2679,13 @@ export class OracleDatabase {
     return result;
   }
 
+  cleanNumber(num) {
+    if (typeof num !== 'number' || !isFinite(num)) return num;
+    if (Number.isInteger(num)) return num;
+    // Normalize IEEE-754 precision noise (e.g. -27.599999999999994 -> -27.6, 22.08000000000004 -> 22.08)
+    return parseFloat(num.toFixed(12));
+  }
+
   evaluateAggregate(expr, rows) {
     const match = expr.match(/^\s*(COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(DISTINCT\s+)?([\s\S]+?)\s*\)\s*$/i);
     if (!match) return null;
@@ -2411,11 +2708,12 @@ export class OracleDatabase {
     if (values.length === 0) return null;
 
     if (func === 'SUM') {
-      return values.reduce((sum, v) => sum + Number(v), 0);
+      const sum = values.reduce((s, v) => s + Number(v), 0);
+      return this.cleanNumber(sum);
     }
     if (func === 'AVG') {
-      const sum = values.reduce((sum, v) => sum + Number(v), 0);
-      return Math.round((sum / values.length) * 100) / 100;
+      const sum = values.reduce((s, v) => s + Number(v), 0);
+      return this.cleanNumber(Math.round((sum / values.length) * 100) / 100);
     }
     if (func === 'MIN') {
       return values.reduce((min, v) => v < min ? v : min, values[0]);
@@ -2439,6 +2737,33 @@ export class OracleDatabase {
 
   evaluateExpression(expr, row) {
     const trimmed = expr.trim();
+
+    // Strip redundant outer matching parentheses around expressions
+    if (trimmed.startsWith('(') && trimmed.endsWith(')') && !/^(COUNT|SUM|AVG|MIN|MAX|NVL|DECODE|UPPER|LOWER|INITCAP|LENGTH|TRIM|SUBSTR|ROUND|TRUNC|MOD|ABS|SYS_CONTEXT)\s*\(/i.test(trimmed) && !/^\(\s*SELECT\b/i.test(trimmed)) {
+      let depth = 0;
+      let matchedOuter = true;
+      for (let i = 0; i < trimmed.length - 1; i++) {
+        if (trimmed[i] === '(') depth++;
+        else if (trimmed[i] === ')') {
+          depth--;
+          if (depth === 0) {
+            matchedOuter = false;
+            break;
+          }
+        }
+      }
+      if (matchedOuter) {
+        return this.evaluateExpression(trimmed.slice(1, -1).trim(), row);
+      }
+    }
+
+    // Unary plus/minus preceding an expression: e.g. -ABS(fee), +ROUND(fee, 2), -NULL, +NULL
+    const unaryFuncMatch = trimmed.match(/^([+-])\s*([a-zA-Z_]\w*\s*\([\s\S]*\)|NULL)$/i);
+    if (unaryFuncMatch) {
+      const sign = unaryFuncMatch[1] === '-' ? -1 : 1;
+      const val = this.evaluateExpression(unaryFuncMatch[2], row);
+      return (val === null || val === undefined) ? null : this.cleanNumber(sign * Number(val));
+    }
 
     const nvlMatch = trimmed.match(/^NVL\s*\(\s*([\s\S]+?)\s*,\s*([\s\S]+?)\s*\)$/i);
     if (nvlMatch) {
@@ -2491,22 +2816,41 @@ export class OracleDatabase {
       return strVal.substr(start);
     }
 
-    const mathFuncMatch = trimmed.match(/^(ROUND|TRUNC|MOD|ABS)\s*\(([\s\S]+)\)$/i);
+    const mathFuncMatch = trimmed.match(/^(ROUND|TRUNC|MOD|ABS|SIGN|CEIL|FLOOR|SQRT|POWER)\s*\(([\s\S]+)\)$/i);
     if (mathFuncMatch) {
       const fn = mathFuncMatch[1].toUpperCase();
       const args = this.splitCommaExpressions(mathFuncMatch[2]);
-      const num1 = Number(this.evaluateExpression(args[0], row));
+      const rawArg0 = this.evaluateExpression(args[0], row);
+      if (rawArg0 === null || rawArg0 === undefined) return null;
+      const num1 = Number(rawArg0);
       if (isNaN(num1)) return null;
 
-      if (fn === 'ABS') return Math.abs(num1);
+      if (fn === 'ABS') return this.cleanNumber(Math.abs(num1));
+      if (fn === 'SIGN') return num1 > 0 ? 1 : (num1 < 0 ? -1 : 0);
+      if (fn === 'CEIL') return Math.ceil(num1);
+      if (fn === 'FLOOR') return Math.floor(num1);
+      if (fn === 'SQRT') {
+        if (num1 < 0) throw new OracleError('ORA-01428', 'argument out of range');
+        return this.cleanNumber(Math.sqrt(num1));
+      }
+      if (fn === 'POWER') {
+        const rawArg1 = this.evaluateExpression(args[1], row);
+        if (rawArg1 === null || rawArg1 === undefined) return null;
+        const num2 = Number(rawArg1);
+        return this.cleanNumber(Math.pow(num1, num2));
+      }
       if (fn === 'MOD') {
-        const num2 = Number(this.evaluateExpression(args[1], row));
-        return num1 % num2;
+        const rawArg1 = this.evaluateExpression(args[1], row);
+        if (rawArg1 === null || rawArg1 === undefined) return null;
+        const num2 = Number(rawArg1);
+        if (isNaN(num2)) return null;
+        // In Oracle SQL, MOD(m, 0) returns m
+        return num2 === 0 ? this.cleanNumber(num1) : this.cleanNumber(num1 % num2);
       }
       const decimals = args.length > 1 ? parseInt(this.evaluateExpression(args[1], row), 10) : 0;
       const factor = Math.pow(10, decimals);
-      if (fn === 'ROUND') return Math.round(num1 * factor) / factor;
-      if (fn === 'TRUNC') return Math.trunc(num1 * factor) / factor;
+      if (fn === 'ROUND') return this.cleanNumber(Math.round(num1 * factor) / factor);
+      if (fn === 'TRUNC') return this.cleanNumber(Math.trunc(num1 * factor) / factor);
     }
 
     if (/^SYSDATE$/i.test(trimmed)) {
@@ -2530,26 +2874,101 @@ export class OracleDatabase {
     }
 
     if (trimmed === 'NULL' || trimmed === 'null') return null;
-    if (/^'([\s\S]*)'$/.test(trimmed)) {
+    if (/^'([^']*(?:''[^']*)*)'$/.test(trimmed)) {
       return trimmed.slice(1, -1).replace(/''/g, "'");
     }
     if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
-      return Number(trimmed);
+      return this.cleanNumber(Number(trimmed));
     }
 
     if (/[-+*/]/.test(trimmed)) {
       try {
-        const evalStr = trimmed.replace(/\b([a-zA-Z_][a-zA-Z0-9_.]*)\b/g, (match) => {
+        let evalStr = trimmed;
+
+        // In Oracle SQL, strings in arithmetic expressions are implicitly converted to numbers (e.g. '1' + '1' -> 2).
+        // If a string literal cannot be converted to a number, Oracle throws ORA-01722: invalid number.
+        if (/'[^']*'/.test(evalStr)) {
+          let hasInvalidNumber = false;
+          evalStr = evalStr.replace(/'([^']*)'/g, (_, strVal) => {
+            const unquoted = strVal.replace(/''/g, "'").trim();
+            if (unquoted === '' || isNaN(Number(unquoted))) {
+              hasInvalidNumber = true;
+              return 'NaN';
+            }
+            return String(Number(unquoted));
+          });
+          if (hasInvalidNumber) {
+            throw new OracleError('ORA-01722', 'invalid number');
+          }
+        }
+
+        // Resolve nested/embedded SQL function calls within arithmetic: e.g. -ABS(fee), 100 - ABS(fee)
+        while (/\b(ABS|ROUND|TRUNC|MOD|SIGN|CEIL|FLOOR|POWER|SQRT|NVL|DECODE|UPPER|LOWER|INITCAP|LENGTH|TRIM|SUBSTR)\s*\([^()]*\)/i.test(evalStr)) {
+          evalStr = evalStr.replace(/\b(ABS|ROUND|TRUNC|MOD|SIGN|CEIL|FLOOR|POWER|SQRT|NVL|DECODE|UPPER|LOWER|INITCAP|LENGTH|TRIM|SUBSTR)\s*\(([^()]*)\)/gi, (funcCall) => {
+            const val = this.evaluateExpression(funcCall, row);
+            return (val === null || val === undefined) ? 'NULL' : String(Number(val));
+          });
+        }
+
+        let hasInvalidIdentifier = null;
+        let hasInvalidNumber = false;
+
+        evalStr = evalStr.replace(/\b([a-zA-Z_][a-zA-Z0-9_.]*)\b/g, (match) => {
           const up = match.toUpperCase();
-          if (row && (row[up] !== undefined)) {
-            return row[up] === null ? '0' : String(Number(row[up]));
+          if (up === 'NULL') return 'NULL';
+          if (/^(CASE|WHEN|THEN|ELSE|END|AND|OR|NOT)$/i.test(up)) return match;
+
+          let colVal = undefined;
+          if (row) {
+            if (row[up] !== undefined) {
+              colVal = row[up];
+            } else {
+              const suffix = '.' + up;
+              for (const [k, v] of Object.entries(row)) {
+                if (k.endsWith(suffix)) {
+                  colVal = v;
+                  break;
+                }
+              }
+            }
+          }
+
+          if (colVal !== undefined) {
+            if (colVal === null) return 'NULL';
+            const num = Number(colVal);
+            if (isNaN(num)) {
+              hasInvalidNumber = true;
+              return 'NaN';
+            }
+            return String(num);
+          }
+
+          // If not in row and we have a valid row, it's an unrecognized column identifier
+          if (row && Object.keys(row).length > 0) {
+            hasInvalidIdentifier = up;
           }
           return match;
         });
-        if (/^[\d\s+\-*/().]+$/.test(evalStr)) {
-          return Function(`'use strict'; return (${evalStr});`)();
+
+        if (hasInvalidIdentifier) {
+          throw new OracleError('ORA-00904', `"${hasInvalidIdentifier}": invalid identifier`);
         }
-      } catch (e) {}
+        if (hasInvalidNumber) {
+          throw new OracleError('ORA-01722', 'invalid number');
+        }
+
+        // In SQL, any arithmetic operation with NULL results in NULL
+        if (/\bNULL\b/i.test(evalStr)) {
+          return null;
+        }
+
+        if (/^[\d\s+\-*/().]+$/.test(evalStr)) {
+          const res = Function(`'use strict'; return (${evalStr});`)();
+          return typeof res === 'number' ? this.cleanNumber(res) : res;
+        }
+      } catch (e) {
+        if (e instanceof OracleError) throw e;
+      }
     }
 
     const colUpper = trimmed.toUpperCase();
@@ -2746,16 +3165,26 @@ export class OracleDatabase {
   processOrderBy(dataset, orderByPart) {
     const criteria = this.splitCommaExpressions(orderByPart).map(c => {
       const parts = c.trim().split(/\s+/);
-      const col = parts[0].toUpperCase();
+      const rawCol = parts[0];
+      const col = rawCol.startsWith('"') && rawCol.endsWith('"') ? rawCol.slice(1, -1) : rawCol;
       const dir = (parts[1] && parts[1].toUpperCase() === 'DESC') ? 'DESC' : 'ASC';
-      return { col, dir };
+      return { col, rawCol, dir };
     });
 
     const sorted = [...dataset];
     sorted.sort((a, b) => {
       for (const crit of criteria) {
-        const valA = a[crit.col] !== undefined ? a[crit.col] : this.evaluateExpression(crit.col, a);
-        const valB = b[crit.col] !== undefined ? b[crit.col] : this.evaluateExpression(crit.col, b);
+        const getRowVal = (row) => {
+          if (row[crit.col] !== undefined) return row[crit.col];
+          const upper = crit.col.toUpperCase();
+          if (row[upper] !== undefined) return row[upper];
+          const entry = Object.entries(row).find(([k]) => k.toUpperCase() === upper);
+          if (entry) return entry[1];
+          return this.evaluateExpression(crit.col, row);
+        };
+
+        const valA = getRowVal(a);
+        const valB = getRowVal(b);
 
         if (valA === valB) continue;
         if (valA === null || valA === undefined) return 1;
