@@ -85,7 +85,12 @@
               onSwitchView('vertical'); 
             }}
           >
-            <span class="hmi-icon">📱</span>
+            <span class="hmi-icon">
+              <svg width="15" height="22" viewBox="0 0 16 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="1" y="1" width="14" height="22" rx="2"></rect>
+                <line x1="1" y1="14" x2="15" y2="14"></line>
+              </svg>
+            </span>
             <div class="hmi-text">
               <strong>Vertical</strong>
               <small>Mobile Portrait SQL Keyboard</small>
@@ -100,7 +105,13 @@
               onSwitchView('landscape'); 
             }}
           >
-            <span class="hmi-icon">📐</span>
+            <span class="hmi-icon">
+              <svg width="22" height="15" viewBox="0 0 24 16" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="1" y="1" width="22" height="14" rx="2"></rect>
+                <line x1="6" y1="1" x2="6" y2="15"></line>
+                <line x1="18" y1="1" x2="18" y2="15"></line>
+              </svg>
+            </span>
             <div class="hmi-text">
               <strong>Landscape</strong>
               <small>Mobile Split Thumb Keyboard</small>
@@ -248,6 +259,17 @@
   .hmi-icon {
     font-size: 16px;
     flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+  }
+
+  .hmi-icon svg {
+    display: block;
+    max-width: 22px;
+    max-height: 22px;
   }
 
   .hmi-text {

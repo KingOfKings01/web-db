@@ -1028,145 +1028,173 @@
 
   <div class="dev {layoutMode}" id="dev" bind:this={devEl}>
     <header>
-      <span class="badge">ORACLE</span>
-      <b>SQL Mobile Studio</b>
-
-      <button class="hb run" on:click={handleRunQuery} title="Run SQL (Execute queries)">
-        ▶ Run
-      </button>
-
-      <button 
-        class="hb" 
-        class:on={showOutput} 
-        on:click={() => showOutput = !showOutput}
-        title="Toggle Output"
-      >
-        {showOutput ? 'Input' : 'Output'}
-      </button>
-
-      <!-- UNIFIED VIEW DROPDOWN (Tables, Vertical, Desktop) -->
-      <div class="menu-dropdown-wrap">
-        <button 
-          class="hb menu-trigger-btn" 
-          class:on={showViewMenu} 
-          on:click|stopPropagation={() => showViewMenu = !showViewMenu}
-          title="Switch Views & Tables"
-        >
-          <span>View ▾</span>
-        </button>
-
-        {#if showViewMenu}
-          <div class="view-menu-popover">
-            <div class="view-menu-title">
-              <span>View &amp; Workspace</span>
-              <button class="view-menu-close-btn" on:click={() => showViewMenu = false}>✕</button>
-            </div>
-
-            <!-- 1. Tables -->
-            <button 
-              class="view-menu-option" 
-              class:is-active={showTablePreviewModal}
-              on:click={() => { 
-                showViewMenu = false; 
-                openTablePreview(activeTableTab); 
-              }}
-            >
-              <span class="vmo-icon">📋</span>
-              <div class="vmo-content">
-                <span class="vmo-label">Tables</span>
-                <span class="vmo-sub">View schema &amp; table data</span>
-              </div>
-            </button>
-
-            <div class="view-menu-sep"></div>
-
-            <!-- 2. Vertical -->
-            <button 
-              class="view-menu-option" 
-              class:is-active={layoutMode === 'vertical'}
-              on:click={() => { 
-                layoutMode = 'vertical'; 
-                try { localStorage.setItem(LAYOUT_STORAGE_KEY, 'vertical'); } catch (_) {}
-                onSwitchLayout('vertical');
-                showViewMenu = false; 
-                tick().then(fitScale);
-              }}
-            >
-              <span class="vmo-icon">📱</span>
-              <div class="vmo-content">
-                <span class="vmo-label">Vertical</span>
-                <span class="vmo-sub">Full bottom keyboard</span>
-              </div>
-              {#if layoutMode === 'vertical'}
-                <span class="vmo-badge">Active</span>
-              {/if}
-            </button>
-
-            <!-- Landscape (also available in the view dropdown) -->
-            <button 
-              class="view-menu-option" 
-              class:is-active={layoutMode === 'landscape'}
-              on:click={() => { 
-                layoutMode = 'landscape'; 
-                try { localStorage.setItem(LAYOUT_STORAGE_KEY, 'landscape'); } catch (_) {}
-                onSwitchLayout('landscape');
-                showViewMenu = false; 
-                tick().then(fitScale);
-              }}
-            >
-              <span class="vmo-icon">📐</span>
-              <div class="vmo-content">
-                <span class="vmo-label">Landscape</span>
-                <span class="vmo-sub">Split thumb keyboard</span>
-              </div>
-              {#if layoutMode === 'landscape'}
-                <span class="vmo-badge">Active</span>
-              {/if}
-            </button>
-
-            <div class="view-menu-sep"></div>
-
-            <!-- 3. Desktop -->
-            <button 
-              class="view-menu-option vmo-desktop" 
-              on:click={() => { 
-                try { localStorage.setItem(LAYOUT_STORAGE_KEY, 'desktop'); } catch (_) {}
-                showViewMenu = false; 
-                onExitMobile(); 
-              }}
-            >
-              <span class="vmo-icon">💻</span>
-              <div class="vmo-content">
-                <span class="vmo-label">Desktop</span>
-                <span class="vmo-sub">Switch to full 3-pane IDE</span>
-              </div>
-            </button>
-          </div>
-        {/if}
+      <!-- Section 1: Left Branding -->
+      <div class="header-left">
+        <span class="badge">ORACLE</span>
+        <b>SQL Mobile Studio</b>
       </div>
 
-      <button 
-        class="hb" 
-        class:on={!hideKeyboard} 
-        on:click={() => hideKeyboard = !hideKeyboard}
-        title="Toggle On-Screen Keyboard"
-      >
-        ⌨
-      </button>
+      <!-- Section 2: Right Actions (Easily accessible by right hand) -->
+      <div class="header-right">
+        <button class="hb run" on:click={handleRunQuery} title="Run SQL (Execute queries)">
+          ▶ Run
+        </button>
 
-      <!-- Fullscreen Toggle -->
-      <button 
-        class="hb" 
-        class:on={isFullscreen} 
-        on:click={toggleFullscreen} 
-        title="Toggle Full Screen Mode"
-      >
-        {isFullscreen ? '⛶ Exit' : '⛶ Full'}
-      </button>
+        <button 
+          class="hb" 
+          class:on={showOutput} 
+          on:click={() => showOutput = !showOutput}
+          title="Toggle Output"
+        >
+          {showOutput ? 'Input' : 'Output'}
+        </button>
 
-      <button class="hb" on:click={onToggleTheme} title="Toggle Light / Dark mode">
-        {theme === 'theme-dark' ? '☀' : '☾'}
-      </button>
+        <!-- UNIFIED VIEW DROPDOWN (Tables, Vertical, Desktop) -->
+        <div class="menu-dropdown-wrap">
+          <button 
+            class="hb menu-trigger-btn" 
+            class:on={showViewMenu} 
+            on:click|stopPropagation={() => showViewMenu = !showViewMenu}
+            title="Switch Views & Tables"
+          >
+            <span>View ▾</span>
+          </button>
+
+          {#if showViewMenu}
+            <div class="view-menu-popover">
+              <div class="view-menu-title">
+                <span>View &amp; Workspace</span>
+                <button class="view-menu-close-btn" on:click={() => showViewMenu = false}>✕</button>
+              </div>
+
+              <!-- 1. Tables -->
+              <button 
+                class="view-menu-option" 
+                class:is-active={showTablePreviewModal}
+                on:click={() => { 
+                  showViewMenu = false; 
+                  openTablePreview(activeTableTab); 
+                }}
+              >
+                <span class="vmo-icon">📋</span>
+                <div class="vmo-content">
+                  <span class="vmo-label">Tables</span>
+                  <span class="vmo-sub">View schema &amp; table data</span>
+                </div>
+              </button>
+
+              <div class="view-menu-sep"></div>
+
+              <!-- 2. Vertical -->
+              <button 
+                class="view-menu-option" 
+                class:is-active={layoutMode === 'vertical'}
+                on:click={() => { 
+                  layoutMode = 'vertical'; 
+                  try { localStorage.setItem(LAYOUT_STORAGE_KEY, 'vertical'); } catch (_) {}
+                  onSwitchLayout('vertical');
+                  showViewMenu = false; 
+                  tick().then(fitScale);
+                }}
+              >
+                <span class="vmo-icon">
+                  <svg width="15" height="22" viewBox="0 0 16 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="1" y="1" width="14" height="22" rx="2"></rect>
+                    <line x1="1" y1="14" x2="15" y2="14"></line>
+                  </svg>
+                </span>
+                <div class="vmo-content">
+                  <span class="vmo-label">Vertical</span>
+                  <span class="vmo-sub">Full bottom keyboard</span>
+                </div>
+                {#if layoutMode === 'vertical'}
+                  <span class="vmo-badge">Active</span>
+                {/if}
+              </button>
+
+              <!-- Landscape (also available in the view dropdown) -->
+              <button 
+                class="view-menu-option" 
+                class:is-active={layoutMode === 'landscape'}
+                on:click={() => { 
+                  layoutMode = 'landscape'; 
+                  try { localStorage.setItem(LAYOUT_STORAGE_KEY, 'landscape'); } catch (_) {}
+                  onSwitchLayout('landscape');
+                  showViewMenu = false; 
+                  tick().then(fitScale);
+                }}
+              >
+                <span class="vmo-icon">
+                  <svg width="22" height="15" viewBox="0 0 24 16" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="1" y="1" width="22" height="14" rx="2"></rect>
+                    <line x1="6" y1="1" x2="6" y2="15"></line>
+                    <line x1="18" y1="1" x2="18" y2="15"></line>
+                  </svg>
+                </span>
+                <div class="vmo-content">
+                  <span class="vmo-label">Landscape</span>
+                  <span class="vmo-sub">Split thumb keyboard</span>
+                </div>
+                {#if layoutMode === 'landscape'}
+                  <span class="vmo-badge">Active</span>
+                {/if}
+              </button>
+
+              <div class="view-menu-sep"></div>
+
+              <!-- 3. Desktop -->
+              <button 
+                class="view-menu-option vmo-desktop" 
+                on:click={() => { 
+                  try { localStorage.setItem(LAYOUT_STORAGE_KEY, 'desktop'); } catch (_) {}
+                  showViewMenu = false; 
+                  onExitMobile(); 
+                }}
+              >
+                <span class="vmo-icon">💻</span>
+                <div class="vmo-content">
+                  <span class="vmo-label">Desktop</span>
+                  <span class="vmo-sub">Switch to full 3-pane IDE</span>
+                </div>
+              </button>
+            </div>
+          {/if}
+        </div>
+
+        <button 
+          class="hb" 
+          class:on={!hideKeyboard} 
+          on:click={() => hideKeyboard = !hideKeyboard}
+          title="Toggle On-Screen Keyboard"
+        >
+          ⌨
+        </button>
+
+        <!-- Layout Mode Direct Toggle (Horizontal / Landscape <-> Vertical / Portrait) -->
+        <button 
+          class="hb layout-toggle-btn" 
+          on:click={toggleLayoutMode} 
+          title={layoutMode === 'landscape' ? 'Horizontal (Landscape) layout - Tap for Vertical' : 'Vertical (Portrait) layout - Tap for Horizontal'}
+          aria-label={layoutMode === 'landscape' ? 'Switch to Vertical layout' : 'Switch to Horizontal layout'}
+        >
+          {#if layoutMode === 'landscape'}
+            <svg width="22" height="15" viewBox="0 0 24 16" fill="none" stroke="currentColor" stroke-width="2" class="layout-icon">
+              <rect x="1" y="1" width="22" height="14" rx="2"></rect>
+              <line x1="6" y1="1" x2="6" y2="15"></line>
+              <line x1="18" y1="1" x2="18" y2="15"></line>
+            </svg>
+          {:else}
+            <svg width="15" height="22" viewBox="0 0 16 24" fill="none" stroke="currentColor" stroke-width="2" class="layout-icon">
+              <rect x="1" y="1" width="14" height="22" rx="2"></rect>
+              <line x1="1" y1="14" x2="15" y2="14"></line>
+            </svg>
+          {/if}
+        </button>
+
+        <button class="hb" on:click={onToggleTheme} title="Toggle Light / Dark mode">
+          {theme === 'theme-dark' ? '☀' : '☾'}
+        </button>
+      </div>
     </header>
 
     <!-- LANDSCAPE LAYOUT (Split Keyboards) -->
@@ -2273,13 +2301,22 @@
     flex: none;
     display: flex;
     align-items: center;
-    gap: 6px;
+    justify-content: space-between;
+    gap: 8px;
     padding: 0 8px 0 10px;
     border-bottom: 1px solid var(--bd);
     background: var(--bg);
     overflow: visible !important;
     position: relative;
     z-index: 5000;
+  }
+
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    min-width: 0;
   }
 
   .badge {
@@ -2293,7 +2330,7 @@
     flex-shrink: 0;
   }
 
-  header b {
+  .header-left b {
     font-size: 12px;
     flex: 0 1 auto;
     color: var(--fg);
@@ -2302,8 +2339,16 @@
     text-overflow: ellipsis;
   }
 
-  @media (max-width: 480px) {
-    header b {
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+
+  @media (max-width: 520px) {
+    .header-left b {
       display: none;
     }
   }
@@ -2320,6 +2365,20 @@
     touch-action: manipulation;
     white-space: nowrap;
     flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .hb.layout-toggle-btn {
+    padding: 0 6px;
+    min-width: 32px;
+  }
+
+  .hb.layout-toggle-btn .layout-icon {
+    display: block;
+    pointer-events: none;
+    max-height: 16px;
   }
 
   .hb.on {
@@ -2428,6 +2487,17 @@
   .vmo-icon {
     font-size: 16px;
     flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+  }
+
+  .vmo-icon svg {
+    display: block;
+    max-width: 22px;
+    max-height: 22px;
   }
 
   .vmo-content {
