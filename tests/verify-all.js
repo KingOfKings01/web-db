@@ -404,6 +404,102 @@ assertTest("SELECT 11 + AB FROM dual throws ORA-00904 (invalid identifier)", inv
 const invalidNumArith = db.executeScript("SELECT 11 + dummy FROM dual;");
 assertTest("SELECT 11 + dummy FROM dual throws ORA-01722 (invalid number due to 'X')", invalidNumArith[0].type === 'ERROR' && invalidNumArith[0].error.code === 'ORA-01722');
 
+// 23. DEFAULT keyword, case-insensitive literals, and ORA-00984 in INSERT VALUES
+const insEmp1 = db.executeScript("INSERT INTO EMPLOYEE VALUES (1, 'Clark', 'Sales', DEFAULT, true, 47000.98, 'M');");
+assertTest("INSERT with DEFAULT and true creates row", insEmp1[0].type === 'DML' && insEmp1[0].rowsAffected === 1);
+
+const selEmp1 = db.executeScript("SELECT * FROM EMPLOYEE WHERE EMP_ID = 1;");
+assertTest("DEFAULT inserted schema default value 'ACTIVE'", selEmp1[0].rows[0]['STATUS'] === 'ACTIVE');
+assertTest("Boolean true stored/displayed as 1", selEmp1[0].rows[0]['IS_ACTIVE'] === 1);
+
+const insEmp2 = db.executeScript("INSERT INTO EMPLOYEE VALUES (2, 'Bruce', 'IT', default, TRUE, 55000, 'M');");
+assertTest("INSERT with lowercase default and uppercase TRUE succeeds", insEmp2[0].type === 'DML' && insEmp2[0].rowsAffected === 1);
+const selEmp2 = db.executeScript("SELECT STATUS, IS_ACTIVE FROM EMPLOYEE WHERE EMP_ID = 2;");
+assertTest("default and TRUE values correctly populated", selEmp2[0].rows[0]['STATUS'] === 'ACTIVE' && selEmp2[0].rows[0]['IS_ACTIVE'] === 1);
+
+const insEmp3 = db.executeScript("INSERT INTO EMPLOYEE VALUES (3, Clark, 'Sales', DEFAULT, true, 47000.98, 'M');");
+assertTest("Unquoted Clark in VALUES throws ORA-00984 (column not allowed here)", insEmp3[0].type === 'ERROR' && insEmp3[0].error.code === 'ORA-00984');
+
+const insEmp4 = db.executeScript("INSERT INTO EMPLOYEE VALUES (4, 'Clark', Sales, DEFAULT, true, 47000.98, 'M');");
+assertTest("Unquoted Sales in VALUES throws ORA-00984 (column not allowed here)", insEmp4[0].type === 'ERROR' && insEmp4[0].error.code === 'ORA-00984');
+
+const insEmp5 = db.executeScript("INSERT INTO EMPLOYEE VALUES (5, 'Clark', 'Sales', DEFAULT, true, 47000.98, M);");
+assertTest("Unquoted M in VALUES throws ORA-00984 (column not allowed here)", insEmp5[0].type === 'ERROR' && insEmp5[0].error.code === 'ORA-00984');
+
+const insEmp6 = db.executeScript("INSERT INTO EMPLOYEE VALUES (6, 'Barry', 'Finance', null, false, 40000, 'M');");
+assertTest("Lowercase null and false succeed", insEmp6[0].type === 'DML' && insEmp6[0].rowsAffected === 1);
+const selEmp6 = db.executeScript("SELECT STATUS, IS_ACTIVE FROM EMPLOYEE WHERE EMP_ID = 6;");
+assertTest("null and false populated correctly (0 for false)", selEmp6[0].rows[0]['STATUS'] === null && selEmp6[0].rows[0]['IS_ACTIVE'] === 0);
+
+const updEmp1 = db.executeScript("UPDATE EMPLOYEE SET STATUS = DEFAULT WHERE EMP_ID = 6;");
+assertTest("UPDATE SET col = DEFAULT succeeds", updEmp1[0].type === 'DML' && updEmp1[0].rowsAffected === 1);
+const selUpd1 = db.executeScript("SELECT STATUS FROM EMPLOYEE WHERE EMP_ID = 6;");
+assertTest("UPDATE SET col = DEFAULT restores default value", selUpd1[0].rows[0]['STATUS'] === 'ACTIVE');
+
+// 24. DATETIME Keywords and Functions (CURRENT_DATE, CURRENT_TIMESTAMP, TIME, DATETIME, TRUNC, etc.)
+db.executeScript(`
+  CREATE TABLE EMP_DATES (
+    empid NUMBER PRIMARY KEY,
+    name VARCHAR2(50),
+    dept VARCHAR2(50),
+    date_of_join DATE,
+    probation_period BOOLEAN,
+    salary NUMBER(10,2),
+    gender CHAR(1)
+  );
+`);
+
+const insDate1 = db.executeScript("INSERT INTO EMP_DATES VALUES (1, 'Clark', 'Sales', CURRENT_DATE, true, 47000.98, 'M');");
+assertTest("INSERT with CURRENT_DATE and true succeeds", insDate1[0].type === 'DML' && insDate1[0].rowsAffected === 1);
+
+const insDate2 = db.executeScript("INSERT INTO EMP_DATES VALUES (2, 'Dave', 'Accounting', '12-NOV-26', false, 48000.83, 'M');");
+assertTest("INSERT with date string and false succeeds", insDate2[0].type === 'DML' && insDate2[0].rowsAffected === 1);
+
+const insDate3 = db.executeScript("INSERT INTO EMP_DATES VALUES (3, 'Ava', 'Sales', CURRENT_DATE, true, 42000.81, 'F');");
+assertTest("INSERT row 3 with CURRENT_DATE and true succeeds", insDate3[0].type === 'DML' && insDate3[0].rowsAffected === 1);
+
+const selDates = db.executeScript("SELECT * FROM EMP_DATES;");
+const r1 = selDates[0].rows[0];
+const r2 = selDates[0].rows[1];
+assertTest("CURRENT_DATE evaluates to formatted date (not literal string 'CURRENT_DATE')", r1.DATE_OF_JOIN !== 'CURRENT_DATE' && /^\d{2}-[A-Z]{3}-\d{2}$/.test(r1.DATE_OF_JOIN));
+assertTest("probation_period shows boolean as 1 and 0", r1.PROBATION_PERIOD === 1 && r2.PROBATION_PERIOD === 0);
+
+// Datetime keywords in SELECT from DUAL
+const selDualDates = db.executeScript("SELECT CURRENT_DATE, SYSDATE, CURRENT_TIME, LOCALTIME, CURRENT_TIMESTAMP, SYSTIMESTAMP, LOCALTIMESTAMP, SESSIONTIMEZONE, DBTIMEZONE FROM dual;");
+const dualRow = selDualDates[0].rows[0];
+assertTest("SELECT CURRENT_DATE returns date", /^\d{2}-[A-Z]{3}-\d{2}$/.test(dualRow['CURRENT_DATE']));
+assertTest("SELECT CURRENT_TIME returns time", /^\d{2}:\d{2}:\d{2}$/.test(dualRow['CURRENT_TIME']));
+assertTest("SELECT CURRENT_TIMESTAMP returns timestamp with timezone", dualRow['CURRENT_TIMESTAMP'].includes(':') && dualRow['CURRENT_TIMESTAMP'].includes('+'));
+assertTest("SELECT DBTIMEZONE returns +00:00", dualRow['DBTIMEZONE'] === '+00:00');
+
+// Date arithmetic & functions
+const selDateArith = db.executeScript("SELECT SYSDATE + 1 AS NEXT_DAY, TRUNC(CURRENT_DATE) AS TRUNC_DATE, ADD_MONTHS(CURRENT_DATE, 1) AS NEXT_MONTH, LAST_DAY(CURRENT_DATE) AS END_MONTH FROM dual;");
+const arithRow = selDateArith[0].rows[0];
+assertTest("SYSDATE + 1 calculates next day", /^\d{2}-[A-Z]{3}-\d{2}$/.test(arithRow['NEXT_DAY']));
+assertTest("TRUNC(CURRENT_DATE) returns date", /^\d{2}-[A-Z]{3}-\d{2}$/.test(arithRow['TRUNC_DATE']));
+assertTest("ADD_MONTHS(CURRENT_DATE, 1) returns next month date", /^\d{2}-[A-Z]{3}-\d{2}$/.test(arithRow['NEXT_MONTH']));
+assertTest("LAST_DAY(CURRENT_DATE) returns end of month", /^\d{2}-[A-Z]{3}-\d{2}$/.test(arithRow['END_MONTH']));
+
+// 25. CREATE TABLE with DEFAULT CURRENT_DATE and DEFAULT TRUE
+const userCreateTable = db.executeScript(`
+  CREATE TABLE EMPLOYEE_USER_DEF (
+    empId NUMBER NOT NULL,
+    name VARCHAR2(15) NOT NULL,
+    dept VARCHAR2(10) NOT NULL,
+    date_of_join DATE DEFAULT CURRENT_DATE,
+    probation_period BOOLEAN DEFAULT TRUE,
+    salary FLOAT,
+    gender CHAR(1)
+  );
+`);
+assertTest("CREATE TABLE with DEFAULT CURRENT_DATE and DEFAULT TRUE succeeds", userCreateTable[0].type === 'DDL' && userCreateTable[0].message === 'Table created.');
+
+const userInsRes = db.executeScript("INSERT INTO EMPLOYEE_USER_DEF VALUES (101, 'Alice', 'Tech', DEFAULT, DEFAULT, 65000, 'F');");
+assertTest("INSERT into EMPLOYEE_USER_DEF using DEFAULT values succeeds", userInsRes[0].type === 'DML' && userInsRes[0].rowsAffected === 1);
+const userRow = db.executeScript("SELECT * FROM EMPLOYEE_USER_DEF WHERE EMPID = 101;")[0].rows[0];
+assertTest("Default date_of_join is system date", /^\d{2}-[A-Z]{3}-\d{2}$/.test(userRow['DATE_OF_JOIN']));
+assertTest("Default probation_period is 1 (boolean TRUE)", userRow['PROBATION_PERIOD'] === 1);
+
 
 console.log('==============================================');
 console.log(`  Tests Passed: ${passedCount} / ${totalCount}`);

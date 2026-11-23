@@ -40,6 +40,19 @@ const DEFAULT_DATABASE = {
         { ID: 5, NAME: 'Kabir', AGE: 12, CITY: 'Goa', MARKS: 60, COURSE_ID: 102 }
       ]
     },
+    EMPLOYEE: {
+      name: 'EMPLOYEE',
+      columns: [
+        { name: 'EMP_ID', type: 'NUMBER', isPk: true, nullable: false },
+        { name: 'NAME', type: 'VARCHAR2(50)', isPk: false, nullable: true },
+        { name: 'DEPT', type: 'VARCHAR2(50)', isPk: false, nullable: true },
+        { name: 'STATUS', type: 'VARCHAR2(20)', isPk: false, nullable: true, hasDefault: true, defaultValue: 'ACTIVE' },
+        { name: 'IS_ACTIVE', type: 'BOOLEAN', isPk: false, nullable: true, hasDefault: true, defaultValue: 1 },
+        { name: 'SALARY', type: 'NUMBER(10,2)', isPk: false, nullable: true },
+        { name: 'GENDER', type: 'CHAR(1)', isPk: false, nullable: true }
+      ],
+      rows: []
+    },
     DUAL: {
       name: 'DUAL',
       columns: [
@@ -143,20 +156,20 @@ export class OracleError extends Error {
 export const ORACLE_RESERVED_WORDS = new Set([
   'ACCESS', 'ADD', 'ALL', 'ALTER', 'AND', 'ANY', 'AS', 'ASC', 'AUDIT',
   'BETWEEN', 'BY',
-  'CHAR', 'CHECK', 'CLUSTER', 'COLUMN', 'COMMENT', 'COMPRESS', 'CONNECT', 'CREATE', 'CURRENT',
-  'DATE', 'DECIMAL', 'DEFAULT', 'DELETE', 'DESC', 'DISTINCT', 'DROP',
+  'CHAR', 'CHECK', 'CLUSTER', 'COLUMN', 'COMMENT', 'COMPRESS', 'CONNECT', 'CREATE', 'CURRENT', 'CURRENT_DATE', 'CURRENT_TIME', 'CURRENT_TIMESTAMP',
+  'DATE', 'DBTIMEZONE', 'DECIMAL', 'DEFAULT', 'DELETE', 'DESC', 'DISTINCT', 'DROP',
   'ELSE', 'EXCLUSIVE', 'EXISTS',
   'FILE', 'FLOAT', 'FOR', 'FROM',
   'GRANT', 'GROUP',
   'HAVING',
   'IDENTIFIED', 'IMMEDIATE', 'IN', 'INCREMENT', 'INDEX', 'INITIAL', 'INSERT', 'INTEGER', 'INTERSECT', 'INTO', 'IS',
-  'LEVEL', 'LIKE', 'LOCK', 'LONG',
+  'LEVEL', 'LIKE', 'LOCALTIME', 'LOCALTIMESTAMP', 'LOCK', 'LONG',
   'MAXEXTENTS', 'MINUS', 'MODE', 'MODIFY',
   'NOAUDIT', 'NOCOMPRESS', 'NOT', 'NOWAIT', 'NULL', 'NUMBER',
   'OF', 'OFF', 'OFFLINE', 'ON', 'ONLINE', 'OPTION', 'OR', 'ORDER',
   'PCTFREE', 'PRIMARY', 'PRIOR', 'PRIVILEGES', 'PUBLIC',
   'RAW', 'RENAME', 'RESOURCE', 'REVOKE', 'ROW', 'ROWID', 'ROWNUM', 'ROWS',
-  'SELECT', 'SESSION', 'SET', 'SHARE', 'SIZE', 'SMALLINT', 'START', 'SUCCESSFUL', 'SYNONYM', 'SYSDATE',
+  'SELECT', 'SESSION', 'SESSIONTIMEZONE', 'SET', 'SHARE', 'SIZE', 'SMALLINT', 'START', 'SUCCESSFUL', 'SYNONYM', 'SYSDATE', 'SYSTIMESTAMP',
   'TABLE', 'THEN', 'TO', 'TRIGGER',
   'UID', 'UNION', 'UNIQUE', 'UPDATE', 'USER',
   'VALIDATE', 'VALUES', 'VARCHAR', 'VARCHAR2', 'VIEW',
@@ -939,13 +952,117 @@ export class OracleDatabase {
     return this.db.views ? this.db.views[upper] : null;
   }
 
-  formatSysdate() {
-    const d = new Date();
+  getSessionTimeZone() {
+    const offsetMin = -new Date().getTimezoneOffset();
+    const sign = offsetMin >= 0 ? '+' : '-';
+    const abs = Math.abs(offsetMin);
+    const h = String(Math.floor(abs / 60)).padStart(2, '0');
+    const m = String(abs % 60).padStart(2, '0');
+    return `${sign}${h}:${m}`;
+  }
+
+  formatCurrentDate(d = new Date()) {
     const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
     const day = String(d.getDate()).padStart(2, '0');
     const mon = months[d.getMonth()];
     const year = String(d.getFullYear()).slice(-2);
     return `${day}-${mon}-${year}`;
+  }
+
+  formatSysdate() {
+    return this.formatCurrentDate();
+  }
+
+  formatCurrentTime(d = new Date()) {
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const ss = String(d.getSeconds()).padStart(2, '0');
+    return `${hh}:${mm}:${ss}`;
+  }
+
+  formatCurrentDateTime(d = new Date()) {
+    return `${this.formatCurrentDate(d)} ${this.formatCurrentTime(d)}`;
+  }
+
+  formatCurrentTimestamp(withTz = true, d = new Date()) {
+    const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+    const day = String(d.getDate()).padStart(2, '0');
+    const mon = months[d.getMonth()];
+    const yr = String(d.getFullYear()).slice(-2);
+    let hours = d.getHours();
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12 || 12;
+    const hh = String(hours).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const ss = String(d.getSeconds()).padStart(2, '0');
+    const ms = String(d.getMilliseconds()).padStart(3, '0') + '000';
+    if (withTz) {
+      const tz = this.getSessionTimeZone();
+      return `${day}-${mon}-${yr} ${hh}.${mm}.${ss}.${ms} ${ampm} ${tz}`;
+    }
+    return `${day}-${mon}-${yr} ${hh}.${mm}.${ss}.${ms} ${ampm}`;
+  }
+
+  formatDateForColumn(colMeta, defaultKind = 'DATE', d = new Date()) {
+    const typeUpper = (colMeta && colMeta.type ? colMeta.type : '').toUpperCase();
+    if (typeUpper.includes('TIME') && !typeUpper.includes('TIMESTAMP') && !typeUpper.includes('DATETIME')) {
+      return this.formatCurrentTime(d);
+    }
+    if (typeUpper.includes('TIMESTAMP')) {
+      return this.formatCurrentTimestamp(typeUpper.includes('TIME ZONE') || typeUpper.includes('TZ'), d);
+    }
+    if (typeUpper.includes('DATETIME')) {
+      return this.formatCurrentDateTime(d);
+    }
+    if (defaultKind === 'TIME') return this.formatCurrentTime(d);
+    if (defaultKind === 'TIMESTAMP') return this.formatCurrentTimestamp(true, d);
+    if (defaultKind === 'LOCALTIMESTAMP') return this.formatCurrentTimestamp(false, d);
+    if (defaultKind === 'DATETIME') return this.formatCurrentDateTime(d);
+    return this.formatCurrentDate(d);
+  }
+
+  parseOracleDate(val) {
+    if (!val) return null;
+    if (val instanceof Date) return val;
+    const str = String(val).trim();
+    if (/^(sysdate|current_date)$/i.test(str)) return new Date();
+    const months = { JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5, JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11 };
+    const dMonY = str.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})/);
+    if (dMonY) {
+      const day = parseInt(dMonY[1], 10);
+      const monStr = dMonY[2].toUpperCase();
+      let year = parseInt(dMonY[3], 10);
+      if (year < 100) year += year < 50 ? 2000 : 1900;
+      if (months[monStr] !== undefined) {
+        return new Date(year, months[monStr], day);
+      }
+    }
+    const iso = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (iso) {
+      return new Date(parseInt(iso[1], 10), parseInt(iso[2], 10) - 1, parseInt(iso[3], 10));
+    }
+    const d = new Date(str);
+    return isNaN(d.getTime()) ? new Date() : d;
+  }
+
+  formatDateWithOraclePattern(val, fmt) {
+    const d = this.parseOracleDate(val) || new Date();
+    const monthsShort = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+    const monthsFull = ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER'];
+    let res = fmt;
+    res = res.replace(/YYYY/g, String(d.getFullYear()));
+    res = res.replace(/YY/g, String(d.getFullYear()).slice(-2));
+    res = res.replace(/MONTH/g, monthsFull[d.getMonth()]);
+    res = res.replace(/MON/g, monthsShort[d.getMonth()]);
+    res = res.replace(/MM/g, String(d.getMonth() + 1).padStart(2, '0'));
+    res = res.replace(/DD/g, String(d.getDate()).padStart(2, '0'));
+    res = res.replace(/HH24/g, String(d.getHours()).padStart(2, '0'));
+    let h12 = d.getHours() % 12 || 12;
+    res = res.replace(/HH12|HH/g, String(h12).padStart(2, '0'));
+    res = res.replace(/MI/g, String(d.getMinutes()).padStart(2, '0'));
+    res = res.replace(/SS/g, String(d.getSeconds()).padStart(2, '0'));
+    res = res.replace(/AM|PM/g, d.getHours() >= 12 ? 'PM' : 'AM');
+    return res;
   }
 
   /**
@@ -1245,14 +1362,46 @@ export class OracleDatabase {
       }
 
       const rawType = typeMatch[0].toUpperCase();
+      const colType = rawType;
       rest = rest.slice(typeMatch[0].length).trim();
 
       let isPk = false;
       let nullable = true;
+      let defaultValue = undefined;
+      let hasDefault = false;
 
       while (rest.length > 0) {
-        const defMatch = rest.match(/^DEFAULT\s+('([^']*)'|-?\d+(?:\.\d+)?|NULL|SYSDATE|[a-zA-Z0-9_$#]+)/i);
+        const defMatch = rest.match(/^DEFAULT\s+('([^']*(?:''[^']*)*)'|-?\d+(?:\.\d+)?|NULL|SYSDATE|CURRENT_DATE|CURRENT_TIME|CURRENT_TIMESTAMP|SYSTIMESTAMP|LOCALTIMESTAMP|LOCALTIME|SESSIONTIMEZONE|DBTIMEZONE|USER|TRUE|FALSE|[a-zA-Z0-9_$#]+)/i);
         if (defMatch) {
+          hasDefault = true;
+          const rawDef = defMatch[1];
+          if (/^null$/i.test(rawDef)) {
+            defaultValue = null;
+          } else if (/^(sysdate|current_date)$/i.test(rawDef)) {
+            defaultValue = this.formatDateForColumn({ type: colType }, 'DATE');
+          } else if (/^(current_time|localtime)$/i.test(rawDef)) {
+            defaultValue = this.formatDateForColumn({ type: colType }, 'TIME');
+          } else if (/^(current_timestamp|systimestamp)$/i.test(rawDef)) {
+            defaultValue = this.formatDateForColumn({ type: colType }, 'TIMESTAMP');
+          } else if (/^localtimestamp$/i.test(rawDef)) {
+            defaultValue = this.formatDateForColumn({ type: colType }, 'LOCALTIMESTAMP');
+          } else if (/^sessiontimezone$/i.test(rawDef)) {
+            defaultValue = this.getSessionTimeZone();
+          } else if (/^dbtimezone$/i.test(rawDef)) {
+            defaultValue = '+00:00';
+          } else if (/^user$/i.test(rawDef)) {
+            defaultValue = (this.db.currentUser || 'SYS').toUpperCase();
+          } else if (/^true$/i.test(rawDef)) {
+            defaultValue = 1;
+          } else if (/^false$/i.test(rawDef)) {
+            defaultValue = 0;
+          } else if (/^'([\s\S]*)'$/.test(rawDef)) {
+            defaultValue = defMatch[2].replace(/''/g, "'");
+          } else if (/^[+-]?\d+(\.\d+)?$/.test(rawDef)) {
+            defaultValue = Number(rawDef);
+          } else {
+            defaultValue = rawDef;
+          }
           rest = rest.slice(defMatch[0].length).trim();
           continue;
         }
@@ -1314,7 +1463,9 @@ export class OracleDatabase {
         name: colName,
         type: rawType,
         isPk: isPk,
-        nullable: nullable
+        nullable: nullable,
+        hasDefault: hasDefault,
+        defaultValue: defaultValue
       });
     }
 
@@ -1543,22 +1694,57 @@ export class OracleDatabase {
       return this.renameTable(renameMatch[1], renameMatch[2]);
     }
 
-    const addMatch = sql.match(/^ALTER\s+TABLE\s+([a-zA-Z0-9_$#]+)\s+ADD\s+\(?([a-zA-Z0-9_$#]+)\s+([a-zA-Z0-9_()]+)\)?/i);
+    const addMatch = sql.match(/^ALTER\s+TABLE\s+([a-zA-Z0-9_$#]+)\s+ADD\s+\(?\s*([a-zA-Z0-9_$#]+)\s+([a-zA-Z0-9_(),\s]+?)\s*\)?$/i);
     if (addMatch) {
       const tableName = addMatch[1].toUpperCase();
       const table = this.getTable(tableName);
       if (!table) throw new OracleError('ORA-00942', 'table or view does not exist');
 
       const colName = addMatch[2].toUpperCase();
-      const colType = addMatch[3].toUpperCase();
+      let rest = addMatch[3].trim();
 
       if (table.columns.some(c => c.name === colName)) {
         throw new OracleError('ORA-01430', 'column being added already exists in table');
       }
 
-      table.columns.push({ name: colName, type: colType, nullable: true });
+      const typeMatch = rest.match(/^(VARCHAR2|VARCHAR|NVARCHAR2|CHAR|NCHAR|NUMBER|NUMERIC|DECIMAL|INT|INTEGER|SMALLINT|FLOAT|DATE|TIMESTAMP(?:\s+WITH(?:\s+LOCAL)?\s+TIME\s+ZONE)?|CLOB|BLOB|NCLOB|BFILE|RAW|ROWID|BOOLEAN)(?:\s*\(\s*\d+(?:\s*,\s*\d+)?(?:\s+(?:BYTE|CHAR))?\s*\))?/i);
+      const colType = typeMatch ? typeMatch[0].toUpperCase() : rest.toUpperCase();
+      if (typeMatch) rest = rest.slice(typeMatch[0].length).trim();
+
+      let defaultValue = undefined;
+      let hasDefault = false;
+      let nullable = true;
+
+      const defMatch = rest.match(/\bDEFAULT\s+('([^']*(?:''[^']*)*)'|-?\d+(?:\.\d+)?|NULL|SYSDATE|CURRENT_DATE|CURRENT_TIME|CURRENT_TIMESTAMP|SYSTIMESTAMP|LOCALTIMESTAMP|LOCALTIME|SESSIONTIMEZONE|DBTIMEZONE|USER|TRUE|FALSE|[a-zA-Z0-9_$#]+)/i);
+      if (defMatch) {
+        hasDefault = true;
+        const rawDef = defMatch[1];
+        if (/^null$/i.test(rawDef)) defaultValue = null;
+        else if (/^(sysdate|current_date)$/i.test(rawDef)) defaultValue = this.formatDateForColumn({ type: colType }, 'DATE');
+        else if (/^(current_time|localtime)$/i.test(rawDef)) defaultValue = this.formatDateForColumn({ type: colType }, 'TIME');
+        else if (/^(current_timestamp|systimestamp)$/i.test(rawDef)) defaultValue = this.formatDateForColumn({ type: colType }, 'TIMESTAMP');
+        else if (/^localtimestamp$/i.test(rawDef)) defaultValue = this.formatDateForColumn({ type: colType }, 'LOCALTIMESTAMP');
+        else if (/^sessiontimezone$/i.test(rawDef)) defaultValue = this.getSessionTimeZone();
+        else if (/^dbtimezone$/i.test(rawDef)) defaultValue = '+00:00';
+        else if (/^user$/i.test(rawDef)) defaultValue = (this.db.currentUser || 'SYS').toUpperCase();
+        else if (/^true$/i.test(rawDef)) defaultValue = 1;
+        else if (/^false$/i.test(rawDef)) defaultValue = 0;
+        else if (/^'([\s\S]*)'$/.test(rawDef)) defaultValue = defMatch[2].replace(/''/g, "'");
+        else if (/^[+-]?\d+(\.\d+)?$/.test(rawDef)) defaultValue = Number(rawDef);
+        else defaultValue = rawDef;
+      }
+
+      if (/\bNOT\s+NULL\b/i.test(rest)) nullable = false;
+
+      table.columns.push({
+        name: colName,
+        type: colType,
+        nullable: nullable,
+        hasDefault: hasDefault,
+        defaultValue: defaultValue
+      });
       for (const row of table.rows) {
-        row[colName] = null;
+        row[colName] = (hasDefault && defaultValue !== undefined) ? defaultValue : null;
       }
       this.notifyChange();
       return { type: 'DDL', command: sql, message: 'Table altered.' };
@@ -1853,7 +2039,7 @@ export class OracleDatabase {
 
     const newRow = {};
     for (const col of table.columns) {
-      newRow[col.name] = null;
+      newRow[col.name] = (col.hasDefault && col.defaultValue !== undefined) ? col.defaultValue : null;
     }
 
     for (let i = 0; i < targetCols.length; i++) {
@@ -1863,7 +2049,7 @@ export class OracleDatabase {
         throw new OracleError('ORA-00904', `"${colName}": invalid identifier`);
       }
 
-      const parsedVal = this.parseLiteralValue(rawVals[i]);
+      const parsedVal = this.parseLiteralValue(rawVals[i], colMeta);
 
       if (parsedVal === null && !colMeta.nullable) {
         throw new OracleError('ORA-01400', `cannot insert NULL into ("STUDENT"."${tableName}"."${colName}")`);
@@ -1874,8 +2060,17 @@ export class OracleDatabase {
           throw new OracleError('ORA-01722', 'invalid number');
         }
         newRow[colName] = Number(parsedVal);
+      } else if (parsedVal !== null && colMeta.type.includes('BOOL')) {
+        newRow[colName] = (parsedVal === true || parsedVal === 1 || String(parsedVal).toLowerCase() === 'true') ? 1 : 0;
       } else {
         newRow[colName] = parsedVal;
+      }
+    }
+
+    // Validate NOT NULL constraints for all columns (including omitted ones without default)
+    for (const col of table.columns) {
+      if (newRow[col.name] === null && !col.nullable) {
+        throw new OracleError('ORA-01400', `cannot insert NULL into ("STUDENT"."${tableName}"."${col.name}")`);
       }
     }
 
@@ -1926,7 +2121,22 @@ export class OracleDatabase {
     for (const row of table.rows) {
       if (!whereClause || this.evaluateWhereCondition(row, whereClause)) {
         for (const assign of assignments) {
-          const val = this.evaluateExpression(assign.expr, row);
+          const colMeta = table.columns.find(c => c.name === assign.col);
+          if (!colMeta) {
+            throw new OracleError('ORA-00904', `"${assign.col}": invalid identifier`);
+          }
+          let val;
+          if (/^default$/i.test(assign.expr.trim())) {
+            val = (colMeta.hasDefault && colMeta.defaultValue !== undefined) ? colMeta.defaultValue : null;
+          } else {
+            val = this.evaluateExpression(assign.expr, row);
+          }
+          if (val === null && !colMeta.nullable) {
+            throw new OracleError('ORA-01407', `cannot update ("STUDENT"."${tableName}"."${assign.col}") to NULL`);
+          }
+          if (val !== null && colMeta.type.includes('BOOL')) {
+            val = (val === true || val === 1 || String(val).toLowerCase() === 'true') ? 1 : 0;
+          }
           row[assign.col] = val;
         }
         updatedCount++;
@@ -2823,7 +3033,13 @@ export class OracleDatabase {
       const rawArg0 = this.evaluateExpression(args[0], row);
       if (rawArg0 === null || rawArg0 === undefined) return null;
       const num1 = Number(rawArg0);
-      if (isNaN(num1)) return null;
+      if (isNaN(num1)) {
+        if (fn === 'TRUNC') {
+          const d = this.parseOracleDate(rawArg0);
+          return d ? this.formatCurrentDate(d) : null;
+        }
+        return null;
+      }
 
       if (fn === 'ABS') return this.cleanNumber(Math.abs(num1));
       if (fn === 'SIGN') return num1 > 0 ? 1 : (num1 < 0 ? -1 : 0);
@@ -2853,8 +3069,105 @@ export class OracleDatabase {
       if (fn === 'TRUNC') return this.cleanNumber(Math.trunc(num1 * factor) / factor);
     }
 
+    const addMonthsMatch = trimmed.match(/^ADD_MONTHS\s*\(([\s\S]+)\)$/i);
+    if (addMonthsMatch) {
+      const args = this.splitCommaExpressions(addMonthsMatch[1]);
+      const dtVal = this.evaluateExpression(args[0], row);
+      const numMonths = parseInt(this.evaluateExpression(args[1], row), 10) || 0;
+      const d = this.parseOracleDate(dtVal) || new Date();
+      d.setMonth(d.getMonth() + numMonths);
+      return this.formatCurrentDate(d);
+    }
+
+    const lastDayMatch = trimmed.match(/^LAST_DAY\s*\(([\s\S]+)\)$/i);
+    if (lastDayMatch) {
+      const dtVal = this.evaluateExpression(lastDayMatch[1], row);
+      const d = this.parseOracleDate(dtVal) || new Date();
+      const lastD = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+      return this.formatCurrentDate(lastD);
+    }
+
+    const monthsBetweenMatch = trimmed.match(/^MONTHS_BETWEEN\s*\(([\s\S]+)\)$/i);
+    if (monthsBetweenMatch) {
+      const args = this.splitCommaExpressions(monthsBetweenMatch[1]);
+      const d1 = this.parseOracleDate(this.evaluateExpression(args[0], row)) || new Date();
+      const d2 = this.parseOracleDate(this.evaluateExpression(args[1], row)) || new Date();
+      const diffMonths = (d1.getFullYear() - d2.getFullYear()) * 12 + (d1.getMonth() - d2.getMonth()) + (d1.getDate() - d2.getDate()) / 31;
+      return this.cleanNumber(Math.round(diffMonths * 100) / 100);
+    }
+
+    const toCharMatch = trimmed.match(/^TO_CHAR\s*\(([\s\S]+)\)$/i);
+    if (toCharMatch) {
+      const args = this.splitCommaExpressions(toCharMatch[1]);
+      const val = this.evaluateExpression(args[0], row);
+      if (val === null || val === undefined) return null;
+      if (args.length === 1) return String(val);
+      const fmt = String(this.evaluateExpression(args[1], row) || '').toUpperCase();
+      return this.formatDateWithOraclePattern(val, fmt);
+    }
+
+    const toDateMatch = trimmed.match(/^TO_DATE\s*\(([\s\S]+)\)$/i);
+    if (toDateMatch) {
+      const args = this.splitCommaExpressions(toDateMatch[1]);
+      const str = String(this.evaluateExpression(args[0], row) || '');
+      const d = this.parseOracleDate(str) || new Date();
+      return this.formatCurrentDate(d);
+    }
+
+    const extractMatch = trimmed.match(/^EXTRACT\s*\(\s*(YEAR|MONTH|DAY|HOUR|MINUTE|SECOND)\s+FROM\s+([\s\S]+?)\s*\)$/i);
+    if (extractMatch) {
+      const part = extractMatch[1].toUpperCase();
+      const val = this.evaluateExpression(extractMatch[2], row);
+      const d = this.parseOracleDate(val) || new Date();
+      if (part === 'YEAR') return d.getFullYear();
+      if (part === 'MONTH') return d.getMonth() + 1;
+      if (part === 'DAY') return d.getDate();
+      if (part === 'HOUR') return d.getHours();
+      if (part === 'MINUTE') return d.getMinutes();
+      if (part === 'SECOND') return d.getSeconds();
+    }
+
+    // Date arithmetic: SYSDATE + n, CURRENT_DATE + n, SYSDATE - n, CURRENT_DATE - n
+    const dateArithMatch = trimmed.match(/^(SYSDATE|CURRENT_DATE)\s*([+-])\s*(\d+(?:\.\d+)?)$/i);
+    if (dateArithMatch) {
+      const op = dateArithMatch[2];
+      const days = parseFloat(dateArithMatch[3]);
+      const now = new Date();
+      const msChange = (op === '+' ? days : -days) * 24 * 60 * 60 * 1000;
+      return this.formatCurrentDate(new Date(now.getTime() + msChange));
+    }
+    const dateArithRevMatch = trimmed.match(/^(\d+(?:\.\d+)?)\s*\+\s*(SYSDATE|CURRENT_DATE)$/i);
+    if (dateArithRevMatch) {
+      const days = parseFloat(dateArithRevMatch[1]);
+      return this.formatCurrentDate(new Date(Date.now() + days * 24 * 60 * 60 * 1000));
+    }
+
     if (/^SYSDATE$/i.test(trimmed)) {
       return this.formatSysdate();
+    }
+
+    if (/^CURRENT_DATE$/i.test(trimmed)) {
+      return this.formatCurrentDate();
+    }
+
+    if (/^(CURRENT_TIME|LOCALTIME)$/i.test(trimmed)) {
+      return this.formatCurrentTime();
+    }
+
+    if (/^(CURRENT_TIMESTAMP|SYSTIMESTAMP)$/i.test(trimmed)) {
+      return this.formatCurrentTimestamp(true);
+    }
+
+    if (/^LOCALTIMESTAMP$/i.test(trimmed)) {
+      return this.formatCurrentTimestamp(false);
+    }
+
+    if (/^SESSIONTIMEZONE$/i.test(trimmed)) {
+      return this.getSessionTimeZone();
+    }
+
+    if (/^DBTIMEZONE$/i.test(trimmed)) {
+      return '+00:00';
     }
 
     if (/^USER$/i.test(trimmed)) {
@@ -2873,7 +3186,9 @@ export class OracleDatabase {
       }).join('');
     }
 
-    if (trimmed === 'NULL' || trimmed === 'null') return null;
+    if (/^null$/i.test(trimmed)) return null;
+    if (/^true$/i.test(trimmed)) return 1;
+    if (/^false$/i.test(trimmed)) return 0;
     if (/^'([^']*(?:''[^']*)*)'$/.test(trimmed)) {
       return trimmed.slice(1, -1).replace(/''/g, "'");
     }
@@ -3345,16 +3660,91 @@ export class OracleDatabase {
     return items;
   }
 
-  parseLiteralValue(valStr) {
+  parseLiteralValue(valStr, colMeta = null) {
     const trimmed = valStr.trim();
-    if (/^null$/i.test(trimmed)) return null;
+
+    // 1. Single-quoted string literal: '...' (handle escaped '' inside)
     if (/^'([\s\S]*)'$/.test(trimmed)) {
       return trimmed.slice(1, -1).replace(/''/g, "'");
     }
-    if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
+
+    // 2. Numeric literal (integers, decimals: e.g. 1, 47000.98, -10, +5.5, .5)
+    if (/^[+-]?(\d+(\.\d*)?|\.\d+)$/.test(trimmed)) {
       return Number(trimmed);
     }
-    return trimmed;
+
+    // 3. NULL (case-insensitive)
+    if (/^null$/i.test(trimmed)) {
+      return null;
+    }
+
+    // 4. DEFAULT (case-insensitive)
+    if (/^default$/i.test(trimmed)) {
+      if (colMeta && colMeta.hasDefault && colMeta.defaultValue !== undefined) {
+        return colMeta.defaultValue;
+      }
+      return null;
+    }
+
+    // 5. TRUE / FALSE (case-insensitive) -> stored as 1 or 0
+    if (/^true$/i.test(trimmed)) {
+      return 1;
+    }
+    if (/^false$/i.test(trimmed)) {
+      return 0;
+    }
+
+    // 6. SYSDATE / CURRENT_DATE (case-insensitive) -> system date/time
+    if (/^(sysdate|current_date)$/i.test(trimmed)) {
+      return this.formatDateForColumn(colMeta, 'DATE');
+    }
+
+    // 7. CURRENT_TIME / LOCALTIME (case-insensitive)
+    if (/^(current_time|localtime)$/i.test(trimmed)) {
+      return this.formatDateForColumn(colMeta, 'TIME');
+    }
+
+    // 8. CURRENT_TIMESTAMP / SYSTIMESTAMP (case-insensitive)
+    if (/^(current_timestamp|systimestamp)$/i.test(trimmed)) {
+      return this.formatDateForColumn(colMeta, 'TIMESTAMP');
+    }
+
+    // 9. LOCALTIMESTAMP (case-insensitive)
+    if (/^localtimestamp$/i.test(trimmed)) {
+      return this.formatDateForColumn(colMeta, 'LOCALTIMESTAMP');
+    }
+
+    // 10. SESSIONTIMEZONE (case-insensitive)
+    if (/^sessiontimezone$/i.test(trimmed)) {
+      return this.getSessionTimeZone();
+    }
+
+    // 11. DBTIMEZONE (case-insensitive)
+    if (/^dbtimezone$/i.test(trimmed)) {
+      return '+00:00';
+    }
+
+    // 12. USER (case-insensitive)
+    if (/^user$/i.test(trimmed)) {
+      return (this.db.currentUser || 'SYS').toUpperCase();
+    }
+
+    // 8. SQL Function calls / arithmetic expressions: UPPER('...'), 10 + 5, ROUND(...), etc.
+    // In Oracle VALUES clause, column references are forbidden and result in ORA-00984.
+    if (/^[A-Za-z_]\w*\s*\(/.test(trimmed) || /[-+*/]/.test(trimmed) || trimmed.includes('||')) {
+      try {
+        return this.evaluateExpression(trimmed, { __IS_VALUES_CLAUSE__: true });
+      } catch (e) {
+        if (e instanceof OracleError && e.code === 'ORA-00904') {
+          throw new OracleError('ORA-00984', 'column not allowed here');
+        }
+        throw e;
+      }
+    }
+
+    // 9. Any unquoted identifier or double-quoted identifier in VALUES is treated as a column reference
+    // In Oracle SQL: ORA-00984: column not allowed here
+    throw new OracleError('ORA-00984', 'column not allowed here');
   }
 }
 

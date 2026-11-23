@@ -929,6 +929,8 @@
                               >
                                 {#if cellVal === null || cellVal === undefined}
                                   <span class="null-val">(null)</span>
+                                {:else if typeof cellVal === 'boolean'}
+                                  {cellVal ? 1 : 0}
                                 {:else}
                                   {cellVal}
                                 {/if}

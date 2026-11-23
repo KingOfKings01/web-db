@@ -1506,6 +1506,8 @@
                                   <td>
                                     {#if row[col] === null || row[col] === undefined}
                                       <span class="null-subtle">(null)</span>
+                                    {:else if typeof row[col] === 'boolean'}
+                                      {row[col] ? 1 : 0}
                                     {:else}
                                       {row[col]}
                                     {/if}
@@ -1826,6 +1828,8 @@
                                   <td>
                                     {#if row[col] === null || row[col] === undefined}
                                       <span class="null-subtle">(null)</span>
+                                    {:else if typeof row[col] === 'boolean'}
+                                      {row[col] ? 1 : 0}
                                     {:else}
                                       {row[col]}
                                     {/if}
@@ -2028,6 +2032,8 @@
                         <td>
                           {#if row[col.name] === null || row[col.name] === undefined}
                             <span class="null-subtle">(null)</span>
+                          {:else if typeof row[col.name] === 'boolean'}
+                            {row[col.name] ? 1 : 0}
                           {:else}
                             {row[col.name]}
                           {/if}

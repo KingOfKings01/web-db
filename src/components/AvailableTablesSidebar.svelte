@@ -67,6 +67,8 @@
                         <td>
                           {#if row[col.name] === null || row[col.name] === undefined}
                             <span class="null-pill">null</span>
+                          {:else if typeof row[col.name] === 'boolean'}
+                            {row[col.name] ? 1 : 0}
                           {:else}
                             {row[col.name]}
                           {/if}
