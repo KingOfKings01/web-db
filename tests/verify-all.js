@@ -500,6 +500,39 @@ const userRow = db.executeScript("SELECT * FROM EMPLOYEE_USER_DEF WHERE EMPID = 
 assertTest("Default date_of_join is system date", /^\d{2}-[A-Z]{3}-\d{2}$/.test(userRow['DATE_OF_JOIN']));
 assertTest("Default probation_period is 1 (boolean TRUE)", userRow['PROBATION_PERIOD'] === 1);
 
+// 26. ORDER BY unprojected columns, positional indexes, and DISTINCT constraint (ORA-01791)
+db.executeScript(`
+  DROP TABLE STUDENT_ORDER_TEST;
+  CREATE TABLE STUDENT_ORDER_TEST (
+    id NUMBER NOT NULL,
+    name VARCHAR2(15) NOT NULL,
+    subject VARCHAR2(10) NOT NULL,
+    date_of_join DATE DEFAULT CURRENT_DATE,
+    is_transfer BOOLEAN DEFAULT FALSE,
+    fee FLOAT,
+    gender CHAR,
+    marks NUMBER
+  );
+  INSERT INTO STUDENT_ORDER_TEST VALUES (1, 'Rohan', 'Sci', DEFAULT, true, 4700.98, 'M', 90);
+  INSERT INTO STUDENT_ORDER_TEST VALUES (2, 'Sara', 'Eng', '12-NOV-26', false, 4800.83, 'F', 80);
+  INSERT INTO STUDENT_ORDER_TEST VALUES (3, 'Riya', 'Sci', '12-NOV-26', DEFAULT, 4200.81, 'F', 68);
+  INSERT INTO STUDENT_ORDER_TEST VALUES (4, 'Aman', 'Math', '12-NOV-26', DEFAULT, 4200.81, 'M', 92);
+`);
+
+const qUnselected = db.executeScript("SELECT id, name FROM STUDENT_ORDER_TEST WHERE date_of_join = '12-NOV-26' ORDER BY subject DESC;");
+assertTest("ORDER BY unprojected column 'subject' succeeds", qUnselected[0].type === 'SELECT' && qUnselected[0].rows.length === 3);
+assertTest("Rows correctly sorted by unprojected column DESC (Sci, Math, Eng)", 
+  qUnselected[0].rows[0]['NAME'] === 'Riya' && 
+  qUnselected[0].rows[1]['NAME'] === 'Aman' && 
+  qUnselected[0].rows[2]['NAME'] === 'Sara'
+);
+
+const qPositional = db.executeScript("SELECT id, name FROM STUDENT_ORDER_TEST ORDER BY 2 ASC;");
+assertTest("ORDER BY positional index 2 ASC works", qPositional[0].rows[0]['NAME'] === 'Aman' && qPositional[0].rows[3]['NAME'] === 'Sara');
+
+const qDistinctErr = db.executeScript("SELECT DISTINCT id, name FROM STUDENT_ORDER_TEST ORDER BY subject DESC;");
+assertTest("SELECT DISTINCT with unprojected ORDER BY throws ORA-01791", qDistinctErr[0].type === 'ERROR' && qDistinctErr[0].error.code === 'ORA-01791');
+
 
 console.log('==============================================');
 console.log(`  Tests Passed: ${passedCount} / ${totalCount}`);

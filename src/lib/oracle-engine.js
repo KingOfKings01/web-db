@@ -2278,22 +2278,41 @@ export class OracleDatabase {
 
     if (groupByPart || hasAggregates) {
       dataset = this.processGroupBy(dataset, selectExpressions, groupByPart, havingPart);
+
+      if (isDistinct) {
+        const seen = new Set();
+        dataset = dataset.filter(row => {
+          const key = JSON.stringify(row);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      }
+
+      if (orderByPart) {
+        dataset = this.processOrderBy(dataset, orderByPart, selectExpressions);
+      }
     } else {
-      dataset = this.projectColumns(dataset, selectExpressions);
-    }
-
-    if (isDistinct) {
-      const seen = new Set();
-      dataset = dataset.filter(row => {
-        const key = JSON.stringify(row);
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
+      let workingItems = dataset.map(sourceRow => {
+        const projectedRow = this.projectSingleRow(sourceRow, selectExpressions);
+        return { sourceRow, projectedRow };
       });
-    }
 
-    if (orderByPart) {
-      dataset = this.processOrderBy(dataset, orderByPart);
+      if (orderByPart) {
+        workingItems = this.processOrderByWorkingItems(workingItems, orderByPart, selectExpressions, isDistinct);
+      }
+
+      dataset = workingItems.map(item => item.projectedRow);
+
+      if (isDistinct) {
+        const seen = new Set();
+        dataset = dataset.filter(row => {
+          const key = JSON.stringify(row);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      }
     }
 
     const limit = fetchFirst || rownumLimit;
@@ -2805,36 +2824,36 @@ export class OracleDatabase {
     return parsed;
   }
 
-  projectColumns(dataset, selectExpressions) {
+  projectSingleRow(row, selectExpressions) {
     if (selectExpressions.length === 1 && selectExpressions[0].isWildcard && selectExpressions[0].expr === '*') {
-      return dataset.map(row => {
-        const clean = {};
-        for (const [k, v] of Object.entries(row)) {
-          if (!k.includes('.')) {
-            clean[k] = v;
-          }
-        }
-        return clean;
-      });
-    }
-
-    return dataset.map(row => {
-      const projected = {};
-      for (const item of selectExpressions) {
-        if (item.isWildcard) {
-          const pfx = item.expr.slice(0, -2).toUpperCase();
-          for (const [k, v] of Object.entries(row)) {
-            if (k.startsWith(pfx + '.')) {
-              const cleanKey = k.substring(pfx.length + 1);
-              projected[cleanKey] = v;
-            }
-          }
-        } else {
-          projected[item.alias] = this.evaluateExpression(item.expr, row);
+      const clean = {};
+      for (const [k, v] of Object.entries(row)) {
+        if (!k.includes('.')) {
+          clean[k] = v;
         }
       }
-      return projected;
-    });
+      return clean;
+    }
+
+    const projected = {};
+    for (const item of selectExpressions) {
+      if (item.isWildcard) {
+        const pfx = item.expr.slice(0, -2).toUpperCase();
+        for (const [k, v] of Object.entries(row)) {
+          if (k.startsWith(pfx + '.')) {
+            const cleanKey = k.substring(pfx.length + 1);
+            projected[cleanKey] = v;
+          }
+        }
+      } else {
+        projected[item.alias] = this.evaluateExpression(item.expr, row);
+      }
+    }
+    return projected;
+  }
+
+  projectColumns(dataset, selectExpressions) {
+    return dataset.map(row => this.projectSingleRow(row, selectExpressions));
   }
 
   processGroupBy(dataset, selectExpressions, groupByPart, havingPart) {
@@ -3477,36 +3496,131 @@ export class OracleDatabase {
     return parts;
   }
 
-  processOrderBy(dataset, orderByPart) {
-    const criteria = this.splitCommaExpressions(orderByPart).map(c => {
-      const parts = c.trim().split(/\s+/);
-      const rawCol = parts[0];
-      const col = rawCol.startsWith('"') && rawCol.endsWith('"') ? rawCol.slice(1, -1) : rawCol;
-      const dir = (parts[1] && parts[1].toUpperCase() === 'DESC') ? 'DESC' : 'ASC';
-      return { col, rawCol, dir };
+  parseOrderByCriteria(orderByPart) {
+    return this.splitCommaExpressions(orderByPart).map(c => {
+      let trimmed = c.trim();
+      let dir = 'ASC';
+      let nullsFirst = undefined;
+
+      const nullsMatch = trimmed.match(/\s+NULLS\s+(FIRST|LAST)\s*$/i);
+      if (nullsMatch) {
+        nullsFirst = nullsMatch[1].toUpperCase() === 'FIRST';
+        trimmed = trimmed.slice(0, nullsMatch.index).trim();
+      }
+
+      const dirMatch = trimmed.match(/\s+(ASC|DESC)\s*$/i);
+      if (dirMatch) {
+        dir = dirMatch[1].toUpperCase();
+        trimmed = trimmed.slice(0, dirMatch.index).trim();
+      }
+
+      if (nullsFirst === undefined) {
+        nullsFirst = (dir === 'DESC');
+      }
+
+      const rawExpr = trimmed;
+      const expr = (rawExpr.startsWith('"') && rawExpr.endsWith('"')) ? rawExpr.slice(1, -1) : rawExpr;
+      return { expr, rawExpr, dir, nullsFirst };
     });
+  }
+
+  processOrderByWorkingItems(workingItems, orderByPart, selectExpressions, isDistinct) {
+    const criteria = this.parseOrderByCriteria(orderByPart);
+
+    const sorted = [...workingItems];
+    sorted.sort((a, b) => {
+      for (const crit of criteria) {
+        const getVal = (item) => {
+          const { sourceRow, projectedRow } = item;
+
+          // 1. Positional column index (1, 2, 3...)
+          if (/^\d+$/.test(crit.expr)) {
+            const pos = parseInt(crit.expr, 10);
+            if (pos < 1 || pos > selectExpressions.length) {
+              throw new OracleError('ORA-01785', 'ORDER BY item must be the number of a SELECT-list expression');
+            }
+            const targetAlias = selectExpressions[pos - 1].alias;
+            return projectedRow[targetAlias];
+          }
+
+          const upperExpr = crit.expr.toUpperCase();
+
+          // 2. Check if matches projected alias or expression in SELECT list
+          if (projectedRow[crit.expr] !== undefined) return projectedRow[crit.expr];
+          if (projectedRow[upperExpr] !== undefined) return projectedRow[upperExpr];
+          const projEntry = Object.entries(projectedRow).find(([k]) => k.toUpperCase() === upperExpr);
+          if (projEntry) return projEntry[1];
+
+          const matchedSelect = selectExpressions.find(e => e.expr.toUpperCase() === upperExpr);
+          if (matchedSelect && projectedRow[matchedSelect.alias] !== undefined) {
+            return projectedRow[matchedSelect.alias];
+          }
+
+          // 3. If DISTINCT is used, ORDER BY items MUST appear in SELECT list
+          if (isDistinct) {
+            throw new OracleError('ORA-01791', 'not a SELECTed expression');
+          }
+
+          // 4. Evaluate against combined row (source columns + projected aliases)
+          const combinedRow = Object.assign({}, sourceRow, projectedRow);
+          return this.evaluateExpression(crit.expr, combinedRow);
+        };
+
+        const valA = getVal(a);
+        const valB = getVal(b);
+
+        if (valA === valB) continue;
+        if (valA === null || valA === undefined) return crit.nullsFirst ? -1 : 1;
+        if (valB === null || valB === undefined) return crit.nullsFirst ? 1 : -1;
+
+        if (typeof valA === 'number' && typeof valB === 'number') {
+          return crit.dir === 'ASC' ? valA - valB : valB - valA;
+        }
+
+        const comp = String(valA).localeCompare(String(valB));
+        return crit.dir === 'ASC' ? comp : -comp;
+      }
+      return 0;
+    });
+
+    return sorted;
+  }
+
+  processOrderBy(dataset, orderByPart, selectExpressions = []) {
+    const criteria = this.parseOrderByCriteria(orderByPart);
 
     const sorted = [...dataset];
     sorted.sort((a, b) => {
       for (const crit of criteria) {
         const getRowVal = (row) => {
-          if (row[crit.col] !== undefined) return row[crit.col];
-          const upper = crit.col.toUpperCase();
+          if (/^\d+$/.test(crit.expr) && selectExpressions && selectExpressions.length > 0) {
+            const pos = parseInt(crit.expr, 10);
+            if (pos >= 1 && pos <= selectExpressions.length) {
+              const targetAlias = selectExpressions[pos - 1].alias;
+              return row[targetAlias];
+            }
+          }
+          if (row[crit.expr] !== undefined) return row[crit.expr];
+          const upper = crit.expr.toUpperCase();
           if (row[upper] !== undefined) return row[upper];
           const entry = Object.entries(row).find(([k]) => k.toUpperCase() === upper);
           if (entry) return entry[1];
-          return this.evaluateExpression(crit.col, row);
+          return this.evaluateExpression(crit.expr, row);
         };
 
         const valA = getRowVal(a);
         const valB = getRowVal(b);
 
         if (valA === valB) continue;
-        if (valA === null || valA === undefined) return 1;
-        if (valB === null || valB === undefined) return -1;
+        if (valA === null || valA === undefined) return crit.nullsFirst ? -1 : 1;
+        if (valB === null || valB === undefined) return crit.nullsFirst ? 1 : -1;
 
-        if (valA < valB) return crit.dir === 'ASC' ? -1 : 1;
-        if (valA > valB) return crit.dir === 'ASC' ? 1 : -1;
+        if (typeof valA === 'number' && typeof valB === 'number') {
+          return crit.dir === 'ASC' ? valA - valB : valB - valA;
+        }
+
+        const comp = String(valA).localeCompare(String(valB));
+        return crit.dir === 'ASC' ? comp : -comp;
       }
       return 0;
     });
