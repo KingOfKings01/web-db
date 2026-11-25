@@ -157,7 +157,7 @@ export const ORACLE_RESERVED_WORDS = new Set([
   'ACCESS', 'ADD', 'ALL', 'ALTER', 'AND', 'ANY', 'AS', 'ASC', 'AUDIT',
   'BETWEEN', 'BY',
   'CHAR', 'CHECK', 'CLUSTER', 'COLUMN', 'COMMENT', 'COMPRESS', 'CONNECT', 'CREATE', 'CURRENT', 'CURRENT_DATE', 'CURRENT_TIME', 'CURRENT_TIMESTAMP',
-  'DATE', 'DBTIMEZONE', 'DECIMAL', 'DEFAULT', 'DELETE', 'DESC', 'DISTINCT', 'DROP',
+  'DATE', 'DBTIMEZONE', 'DECIMAL', 'DEFAULT', 'DELETE', 'DESC', 'DESTINCT', 'DISTINCT', 'DROP',
   'ELSE', 'EXCLUSIVE', 'EXISTS',
   'FILE', 'FLOAT', 'FOR', 'FROM',
   'GRANT', 'GROUP',
@@ -2226,7 +2226,7 @@ export class OracleDatabase {
       };
     }
 
-    const selectRegex = /^\s*SELECT\s+(DISTINCT\s+)?([\s\S]+?)\s+FROM\s+([\s\S]+?)(?:\s+WHERE\s+([\s\S]+?))?(?:\s+GROUP\s+BY\s+([\s\S]+?))?(?:\s+HAVING\s+([\s\S]+?))?(?:\s+ORDER\s+BY\s+([\s\S]+?))?(?:\s+FETCH\s+FIRST\s+(\d+)\s+ROWS\s+ONLY)?$/i;
+    const selectRegex = /^\s*SELECT\s+(DISTINCT\s+|DESTINCT\s+)?([\s\S]+?)\s+FROM\s+([\s\S]+?)(?:\s+WHERE\s+([\s\S]+?))?(?:\s+GROUP\s+BY\s+([\s\S]+?))?(?:\s+HAVING\s+([\s\S]+?))?(?:\s+ORDER\s+BY\s+([\s\S]+?))?(?:\s+FETCH\s+FIRST\s+(\d+)\s+ROWS\s+ONLY)?$/i;
     const match = sql.match(selectRegex);
 
     if (!match) {
@@ -2685,7 +2685,7 @@ export class OracleDatabase {
           continue;
         }
 
-        if (/^(AND|OR|NOT|LIKE|IN|IS|BETWEEN|ESCAPE|CASE|WHEN|THEN|ELSE|END|DISTINCT|ALL)$/i.test(word)) {
+        if (/^(AND|OR|NOT|LIKE|IN|IS|BETWEEN|ESCAPE|CASE|WHEN|THEN|ELSE|END|DISTINCT|DESTINCT|ALL)$/i.test(word)) {
           tokens.push('OP');
         } else {
           tokens.push('TERM');
@@ -2887,7 +2887,7 @@ export class OracleDatabase {
 
       for (const item of selectExpressions) {
         if (item.isAggregate) {
-          row[item.alias] = this.evaluateAggregate(item.expr, group.rows);
+          row[item.alias] = this.evaluateAggregateExpression(item.expr, group.rows);
         } else {
           const exprUpper = item.expr.toUpperCase();
           if (groupCols.length > 0 && !groupCols.includes(exprUpper) && !groupCols.some(g => g.endsWith('.' + exprUpper) || exprUpper.endsWith('.' + g))) {
@@ -2908,6 +2908,46 @@ export class OracleDatabase {
     return result;
   }
 
+  evaluateAggregateExpression(expr, groupRows) {
+    const trimmed = expr.trim();
+    // Fast path: if the ENTIRE trimmed string is a single aggregate function FUNC(...)
+    const singleAggMatch = trimmed.match(/^\s*(COUNT|SUM|AVG|MIN|MAX)\s*\(/i);
+    if (singleAggMatch) {
+      const openParenIdx = trimmed.indexOf('(');
+      let depth = 1;
+      let closeParenIdx = -1;
+      for (let i = openParenIdx + 1; i < trimmed.length; i++) {
+        if (trimmed[i] === '(') depth++;
+        else if (trimmed[i] === ')') {
+          depth--;
+          if (depth === 0) {
+            closeParenIdx = i;
+            break;
+          }
+        }
+      }
+      if (closeParenIdx === trimmed.length - 1) {
+        return this.evaluateAggregate(trimmed, groupRows);
+      }
+    }
+
+    let evalStr = trimmed;
+    let iterations = 0;
+    while (/\b(COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(DISTINCT\s+|DESTINCT\s+)?([^()]*|\*)\s*\)/i.test(evalStr) && iterations < 10) {
+      iterations++;
+      evalStr = evalStr.replace(/\b(COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(DISTINCT\s+|DESTINCT\s+)?([^()]*|\*)\s*\)/gi, (match) => {
+        const val = this.evaluateAggregate(match, groupRows);
+        if (val === null || val === undefined) return 'NULL';
+        if (typeof val === 'number') return String(val);
+        if (typeof val === 'string') return `'${val.replace(/'/g, "''")}'`;
+        return String(val);
+      });
+    }
+
+    const sampleRow = groupRows[0] || {};
+    return this.evaluateExpression(evalStr, sampleRow);
+  }
+
   cleanNumber(num) {
     if (typeof num !== 'number' || !isFinite(num)) return num;
     if (Number.isInteger(num)) return num;
@@ -2916,7 +2956,7 @@ export class OracleDatabase {
   }
 
   evaluateAggregate(expr, rows) {
-    const match = expr.match(/^\s*(COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(DISTINCT\s+)?([\s\S]+?)\s*\)\s*$/i);
+    const match = expr.match(/^\s*(COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(DISTINCT\s+|DESTINCT\s+)?([\s\S]+?)\s*\)\s*$/i);
     if (!match) return null;
 
     const func = match[1].toUpperCase();
@@ -2945,9 +2985,17 @@ export class OracleDatabase {
       return this.cleanNumber(Math.round((sum / values.length) * 100) / 100);
     }
     if (func === 'MIN') {
+      const isNum = values.every(v => typeof v === 'number' || (!isNaN(Number(v)) && typeof v !== 'boolean'));
+      if (isNum) {
+        return values.reduce((min, v) => Number(v) < Number(min) ? v : min, values[0]);
+      }
       return values.reduce((min, v) => v < min ? v : min, values[0]);
     }
     if (func === 'MAX') {
+      const isNum = values.every(v => typeof v === 'number' || (!isNaN(Number(v)) && typeof v !== 'boolean'));
+      if (isNum) {
+        return values.reduce((max, v) => Number(v) > Number(max) ? v : max, values[0]);
+      }
       return values.reduce((max, v) => v > max ? v : max, values[0]);
     }
 
@@ -2968,7 +3016,7 @@ export class OracleDatabase {
     const trimmed = expr.trim();
 
     // Strip redundant outer matching parentheses around expressions
-    if (trimmed.startsWith('(') && trimmed.endsWith(')') && !/^(COUNT|SUM|AVG|MIN|MAX|NVL|DECODE|UPPER|LOWER|INITCAP|LENGTH|TRIM|SUBSTR|ROUND|TRUNC|MOD|ABS|SYS_CONTEXT)\s*\(/i.test(trimmed) && !/^\(\s*SELECT\b/i.test(trimmed)) {
+    if (trimmed.startsWith('(') && trimmed.endsWith(')') && !/^(COUNT|SUM|AVG|MIN|MAX|NVL|DECODE|UPPER|LOWER|INITCAP|INTICAP|LENGTH|TRIM|SUBSTR|CONCAT|ROUND|TRUNC|MOD|ABS|SIGN|CEIL|FLOOR|SQRT|POWER|SYS_CONTEXT)\s*\(/i.test(trimmed) && !/^\(\s*SELECT\b/i.test(trimmed)) {
       let depth = 0;
       let matchedOuter = true;
       for (let i = 0; i < trimmed.length - 1; i++) {
@@ -3017,7 +3065,7 @@ export class OracleDatabase {
       return null;
     }
 
-    const stringFuncMatch = trimmed.match(/^(UPPER|LOWER|INITCAP|LENGTH|TRIM)\s*\(([\s\S]+)\)$/i);
+    const stringFuncMatch = trimmed.match(/^(UPPER|LOWER|INITCAP|INTICAP|LENGTH|TRIM)\s*\(([\s\S]+)\)$/i);
     if (stringFuncMatch) {
       const fn = stringFuncMatch[1].toUpperCase();
       const argVal = this.evaluateExpression(stringFuncMatch[2], row);
@@ -3027,7 +3075,7 @@ export class OracleDatabase {
       if (fn === 'LOWER') return str.toLowerCase();
       if (fn === 'LENGTH') return str.length;
       if (fn === 'TRIM') return str.trim();
-      if (fn === 'INITCAP') {
+      if (fn === 'INITCAP' || fn === 'INTICAP') {
         return str.replace(/\b\w+/g, s => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase());
       }
     }
@@ -3043,6 +3091,19 @@ export class OracleDatabase {
         return strVal.substr(start, len);
       }
       return strVal.substr(start);
+    }
+
+    const concatFuncMatch = trimmed.match(/^CONCAT\s*\(([\s\S]+)\)$/i);
+    if (concatFuncMatch) {
+      const args = this.splitCommaExpressions(concatFuncMatch[1]);
+      if (args.length < 2) throw new OracleError('ORA-00938', 'not enough arguments for function CONCAT');
+      if (args.length > 2) throw new OracleError('ORA-00939', 'too many arguments for function CONCAT');
+      const val1 = this.evaluateExpression(args[0], row);
+      const val2 = this.evaluateExpression(args[1], row);
+      if (val1 === null && val2 === null) return null;
+      const str1 = (val1 === null || val1 === undefined) ? '' : String(val1);
+      const str2 = (val2 === null || val2 === undefined) ? '' : String(val2);
+      return str1 + str2;
     }
 
     const mathFuncMatch = trimmed.match(/^(ROUND|TRUNC|MOD|ABS|SIGN|CEIL|FLOOR|SQRT|POWER)\s*\(([\s\S]+)\)$/i);
@@ -3237,8 +3298,8 @@ export class OracleDatabase {
         }
 
         // Resolve nested/embedded SQL function calls within arithmetic: e.g. -ABS(fee), 100 - ABS(fee)
-        while (/\b(ABS|ROUND|TRUNC|MOD|SIGN|CEIL|FLOOR|POWER|SQRT|NVL|DECODE|UPPER|LOWER|INITCAP|LENGTH|TRIM|SUBSTR)\s*\([^()]*\)/i.test(evalStr)) {
-          evalStr = evalStr.replace(/\b(ABS|ROUND|TRUNC|MOD|SIGN|CEIL|FLOOR|POWER|SQRT|NVL|DECODE|UPPER|LOWER|INITCAP|LENGTH|TRIM|SUBSTR)\s*\(([^()]*)\)/gi, (funcCall) => {
+        while (/\b(ABS|ROUND|TRUNC|MOD|SIGN|CEIL|FLOOR|POWER|SQRT|NVL|DECODE|UPPER|LOWER|INITCAP|INTICAP|LENGTH|TRIM|SUBSTR|CONCAT)\s*\([^()]*\)/i.test(evalStr)) {
+          evalStr = evalStr.replace(/\b(ABS|ROUND|TRUNC|MOD|SIGN|CEIL|FLOOR|POWER|SQRT|NVL|DECODE|UPPER|LOWER|INITCAP|INTICAP|LENGTH|TRIM|SUBSTR|CONCAT)\s*\(([^()]*)\)/gi, (funcCall) => {
             const val = this.evaluateExpression(funcCall, row);
             return (val === null || val === undefined) ? 'NULL' : String(Number(val));
           });
@@ -3277,7 +3338,10 @@ export class OracleDatabase {
             return String(num);
           }
 
-          // If not in row and we have a valid row, it's an unrecognized column identifier
+          // If not in row and we have a valid row, check if it's a group function or an unrecognized column identifier
+          if (/^(COUNT|SUM|AVG|MIN|MAX)$/i.test(up)) {
+            throw new OracleError('ORA-00934', 'group function is not allowed here');
+          }
           if (row && Object.keys(row).length > 0) {
             hasInvalidIdentifier = up;
           }
@@ -3317,6 +3381,15 @@ export class OracleDatabase {
           return v;
         }
       }
+    }
+
+    const funcCallMatch = trimmed.match(/^([a-zA-Z_]\w*)\s*\(/);
+    if (funcCallMatch && !trimmed.startsWith("'") && !trimmed.startsWith('"')) {
+      const fnName = funcCallMatch[1].toUpperCase();
+      if (/^(COUNT|SUM|AVG|MIN|MAX)$/.test(fnName)) {
+        throw new OracleError('ORA-00934', 'group function is not allowed here');
+      }
+      throw new OracleError('ORA-00904', `"${fnName}": invalid identifier`);
     }
 
     if (/^[a-zA-Z0-9_$#.]+$/.test(trimmed) && row && Object.keys(row).length > 0) {

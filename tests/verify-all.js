@@ -533,6 +533,117 @@ assertTest("ORDER BY positional index 2 ASC works", qPositional[0].rows[0]['NAME
 const qDistinctErr = db.executeScript("SELECT DISTINCT id, name FROM STUDENT_ORDER_TEST ORDER BY subject DESC;");
 assertTest("SELECT DISTINCT with unprojected ORDER BY throws ORA-01791", qDistinctErr[0].type === 'ERROR' && qDistinctErr[0].error.code === 'ORA-01791');
 
+// 27. CONCAT function support (Oracle 2-argument concat)
+const concatCol = db.executeScript("SELECT CONCAT('STUDENT', name) AS res FROM students;");
+assertTest("SELECT CONCAT('STUDENT', name) evaluates successfully", concatCol[0].type === 'SELECT' && concatCol[0].rows[0]['RES'].startsWith('STUDENT'));
+
+const concatDual = db.executeScript("SELECT CONCAT('Hello', 'World') AS res FROM dual;");
+assertTest("SELECT CONCAT('Hello', 'World') returns 'HelloWorld'", concatDual[0].rows[0]['RES'] === 'HelloWorld');
+
+const concatNull = db.executeScript("SELECT CONCAT('Hello', NULL) AS r1, CONCAT(NULL, 'World') AS r2, CONCAT(NULL, NULL) AS r3 FROM dual;");
+assertTest("CONCAT with NULL handles partial and full nulls correctly", 
+  concatNull[0].rows[0]['R1'] === 'Hello' && 
+  concatNull[0].rows[0]['R2'] === 'World' && 
+  concatNull[0].rows[0]['R3'] === null
+);
+
+const concatNested = db.executeScript("SELECT CONCAT(CONCAT('a', 'b'), 'c') AS res FROM dual;");
+assertTest("Nested CONCAT evaluates to 'abc'", concatNested[0].rows[0]['RES'] === 'abc');
+
+const concatTooFew = db.executeScript("SELECT CONCAT('a') FROM dual;");
+assertTest("CONCAT with < 2 args throws ORA-00938", concatTooFew[0].type === 'ERROR' && concatTooFew[0].error.code === 'ORA-00938');
+
+const concatTooMany = db.executeScript("SELECT CONCAT('a', 'b', 'c') FROM dual;");
+assertTest("CONCAT with > 2 args throws ORA-00939", concatTooMany[0].type === 'ERROR' && concatTooMany[0].error.code === 'ORA-00939');
+
+const concatWhere = db.executeScript("SELECT name FROM students WHERE CONCAT('STUDENT', name) = 'STUDENTAman';");
+assertTest("CONCAT in WHERE clause filters correctly", concatWhere[0].rows.length === 1 && concatWhere[0].rows[0]['NAME'] === 'Aman');
+
+// 28. String & Math functions (INITCAP, INTICAP, ROUND, TRUNC, CEIL, FLOOR, MOD, ABS) & Aggregates
+db.executeScript(`
+  CREATE TABLE FUNCS_TEST (
+    id NUMBER NOT NULL,
+    name VARCHAR2(15) NOT NULL,
+    subject VARCHAR2(10) NOT NULL,
+    marks NUMBER,
+    fee FLOAT
+  );
+  INSERT INTO FUNCS_TEST VALUES (1, 'Rohan', 'Sci', 90, 4700.98);
+  INSERT INTO FUNCS_TEST VALUES (2, 'Sara', 'Eng', 80, 4800.83);
+  INSERT INTO FUNCS_TEST VALUES (3, 'Riya', 'Sci', 68, 4200.81);
+  INSERT INTO FUNCS_TEST VALUES (4, 'Aman', 'Math', 92, 4200.81);
+`);
+
+const initcapRes = db.executeScript("SELECT inticap(subject) AS s1, initcap(name) AS s2 FROM FUNCS_TEST WHERE id = 1;");
+assertTest("inticap and initcap capitalize column values", initcapRes[0].rows[0]['S1'] === 'Sci' && initcapRes[0].rows[0]['S2'] === 'Rohan');
+
+const mathDualRes = db.executeScript(`
+  SELECT 
+    ROUND(4700.98) AS r1, ROUND(4700.98, 1) AS r2, ROUND(125.45, -1) AS r3,
+    TRUNC(4700.98) AS t1, TRUNC(4700.98, 1) AS t2, TRUNC(125.45, -1) AS t3,
+    CEIL(4700.12) AS c1, CEIL(-4700.98) AS c2,
+    FLOOR(4700.98) AS f1, FLOOR(-4700.12) AS f2,
+    MOD(11, 4) AS m1, MOD(11, 0) AS m2, MOD(-11, 4) AS m3,
+    ABS(-4700.98) AS a1, ABS(4700.98) AS a2
+  FROM dual;
+`);
+const md = mathDualRes[0].rows[0];
+assertTest("ROUND with positive, zero, and negative decimal places", md['R1'] === 4701 && md['R2'] === 4701 && md['R3'] === 130);
+assertTest("TRUNC with positive, zero, and negative decimal places", md['T1'] === 4700 && md['T2'] === 4700.9 && md['T3'] === 120);
+assertTest("CEIL handles positive and negative numbers", md['C1'] === 4701 && md['C2'] === -4700);
+assertTest("FLOOR handles positive and negative numbers", md['F1'] === 4700 && md['F2'] === -4701);
+assertTest("MOD handles standard, zero divisor, and negative numbers", md['M1'] === 3 && md['M2'] === 11 && md['M3'] === -3);
+assertTest("ABS handles negative and positive numbers", md['A1'] === 4700.98 && md['A2'] === 4700.98);
+
+const aggResAll = db.executeScript(`
+  SELECT 
+    COUNT(*) AS total_count,
+    COUNT(subject) AS subject_count,
+    COUNT(DISTINCT subject) AS unique_dist,
+    COUNT(DESTINCT subject) AS unique_dest,
+    SUM(marks) AS sum_marks,
+    AVG(marks) AS avg_marks,
+    MAX(marks) AS max_marks,
+    MIN(marks) AS min_marks
+  FROM FUNCS_TEST;
+`);
+const ag = aggResAll[0].rows[0];
+assertTest("Aggregate COUNT(*), COUNT(col), COUNT(DISTINCT col), COUNT(DESTINCT col)", 
+  ag['TOTAL_COUNT'] === 4 && ag['SUBJECT_COUNT'] === 4 && ag['UNIQUE_DIST'] === 3 && ag['UNIQUE_DEST'] === 3
+);
+assertTest("Aggregate SUM, AVG, MAX, MIN calculated correctly", 
+  ag['SUM_MARKS'] === 330 && ag['AVG_MARKS'] === 82.5 && ag['MAX_MARKS'] === 92 && ag['MIN_MARKS'] === 68
+);
+
+const destinctQuery = db.executeScript("SELECT DESTINCT subject FROM FUNCS_TEST ORDER BY subject ASC;");
+assertTest("SELECT DESTINCT returns unique rows", destinctQuery[0].rows.length === 3 && destinctQuery[0].rows[0]['SUBJECT'] === 'Eng');
+
+const aggExprRes = db.executeScript(`
+  SELECT 
+    MAX(marks) - MIN(marks) AS mark_range,
+    COUNT(*) + 10 AS count_plus_10,
+    ROUND(AVG(fee), 2) AS avg_fee_rnd
+  FROM FUNCS_TEST;
+`);
+const ae = aggExprRes[0].rows[0];
+assertTest("Aggregate expressions with arithmetic and functions (MAX - MIN, COUNT + 10, ROUND(AVG))", 
+  ae['MARK_RANGE'] === 24 && ae['COUNT_PLUS_10'] === 14 && ae['AVG_FEE_RND'] > 4000
+);
+
+const aggGroupByRes = db.executeScript(`
+  SELECT subject, COUNT(*) AS cnt, MAX(marks) - MIN(marks) AS diff
+  FROM FUNCS_TEST GROUP BY subject ORDER BY subject ASC;
+`);
+assertTest("GROUP BY with aggregate expression", 
+  aggGroupByRes[0].rows.length === 3 && aggGroupByRes[0].rows.find(r => r['SUBJECT'] === 'Sci')['DIFF'] === 22
+);
+
+const invalidFuncRes = db.executeScript("SELECT invalid_func(name) FROM FUNCS_TEST;");
+assertTest("Unrecognized function call throws ORA-00904", invalidFuncRes[0].type === 'ERROR' && invalidFuncRes[0].error.code === 'ORA-00904');
+
+const groupInWhereRes = db.executeScript("SELECT id FROM FUNCS_TEST WHERE COUNT(*) > 1;");
+assertTest("Group function in WHERE clause throws ORA-00934", groupInWhereRes[0].type === 'ERROR' && groupInWhereRes[0].error.code === 'ORA-00934');
+
 
 console.log('==============================================');
 console.log(`  Tests Passed: ${passedCount} / ${totalCount}`);
