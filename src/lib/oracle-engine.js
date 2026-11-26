@@ -2227,11 +2227,11 @@ export class OracleDatabase {
     }
 
     const selectRegex = /^\s*SELECT\s+(DISTINCT\s+|DESTINCT\s+)?([\s\S]+?)\s+FROM\s+([\s\S]+?)(?:\s+WHERE\s+([\s\S]+?))?(?:\s+GROUP\s+BY\s+([\s\S]+?))?(?:\s+HAVING\s+([\s\S]+?))?(?:\s+ORDER\s+BY\s+([\s\S]+?))?(?:\s+FETCH\s+FIRST\s+(\d+)\s+ROWS\s+ONLY)?$/i;
-    const match = sql.match(selectRegex);
+    let match = sql.match(selectRegex);
 
     if (!match) {
       const simpleNoFrom = sql.match(/^\s*SELECT\s+([\s\S]+)$/i);
-      if (simpleNoFrom) {
+      if (simpleNoFrom && !/\bFROM\b/i.test(simpleNoFrom[1])) {
         throw new OracleError('ORA-00923', 'FROM keyword not found where expected');
       }
       throw new OracleError('ORA-00936', 'missing expression');
@@ -2241,10 +2241,34 @@ export class OracleDatabase {
     const colsPart = match[2].trim();
     const fromPart = match[3].trim();
     let wherePart = match[4] ? match[4].trim() : null;
-    const groupByPart = match[5] ? match[5].trim() : null;
-    const havingPart = match[6] ? match[6].trim() : null;
+    let groupByPart = match[5] ? match[5].trim() : null;
+    let havingPart = match[6] ? match[6].trim() : null;
     const orderByPart = match[7] ? match[7].trim() : null;
     const fetchFirst = match[8] ? parseInt(match[8], 10) : null;
+
+    // Check for HAVING preceding GROUP BY (valid in Oracle SQL): e.g. HAVING COUNT(*) > 1 GROUP BY subject
+    if (!groupByPart && havingPart && /\bGROUP\s+BY\b/i.test(havingPart)) {
+      const parts = havingPart.split(/\bGROUP\s+BY\b/i);
+      havingPart = parts[0].trim();
+      groupByPart = parts[1].trim();
+    }
+
+    // Check for out-of-order clauses: e.g. WHERE after GROUP BY/ORDER BY
+    if (fromPart && /\b(WHERE|GROUP\s+BY|HAVING|ORDER\s+BY)\b/i.test(fromPart)) {
+      throw new OracleError('ORA-00933', 'SQL command not properly ended');
+    }
+    if (wherePart && /\b(GROUP\s+BY|HAVING|ORDER\s+BY)\b/i.test(wherePart)) {
+      throw new OracleError('ORA-00933', 'SQL command not properly ended');
+    }
+    if (groupByPart && /\bWHERE\b/i.test(groupByPart)) {
+      throw new OracleError('ORA-00933', 'SQL command not properly ended');
+    }
+    if (havingPart && /\bWHERE\b/i.test(havingPart)) {
+      throw new OracleError('ORA-00933', 'SQL command not properly ended');
+    }
+    if (orderByPart && /\b(WHERE|GROUP\s+BY|HAVING)\b/i.test(orderByPart)) {
+      throw new OracleError('ORA-00933', 'SQL command not properly ended');
+    }
 
     if (fromPart.startsWith(',') || fromPart.endsWith(',')) {
       throw new OracleError('ORA-00903', 'invalid table name');
@@ -2253,6 +2277,9 @@ export class OracleDatabase {
       throw new OracleError('ORA-00936', 'missing expression');
     }
     if (groupByPart && (groupByPart.startsWith(',') || groupByPart.endsWith(','))) {
+      throw new OracleError('ORA-00936', 'missing expression');
+    }
+    if (havingPart && (havingPart.startsWith(',') || havingPart.endsWith(','))) {
       throw new OracleError('ORA-00936', 'missing expression');
     }
     if (orderByPart && (orderByPart.startsWith(',') || orderByPart.endsWith(','))) {
@@ -2276,7 +2303,7 @@ export class OracleDatabase {
     const selectExpressions = this.parseSelectColumns(colsPart);
     const hasAggregates = selectExpressions.some(e => e.isAggregate);
 
-    if (groupByPart || hasAggregates) {
+    if (groupByPart || hasAggregates || havingPart) {
       dataset = this.processGroupBy(dataset, selectExpressions, groupByPart, havingPart);
 
       if (isDistinct) {
@@ -2890,15 +2917,23 @@ export class OracleDatabase {
           row[item.alias] = this.evaluateAggregateExpression(item.expr, group.rows);
         } else {
           const exprUpper = item.expr.toUpperCase();
-          if (groupCols.length > 0 && !groupCols.includes(exprUpper) && !groupCols.some(g => g.endsWith('.' + exprUpper) || exprUpper.endsWith('.' + g))) {
-            throw new OracleError('ORA-00979', 'not a GROUP BY expression');
+          if (groupCols.length > 0) {
+            if (!groupCols.includes(exprUpper) && !groupCols.some(g => g.endsWith('.' + exprUpper) || exprUpper.endsWith('.' + g))) {
+              throw new OracleError('ORA-00979', 'not a GROUP BY expression');
+            }
+          } else {
+            // No GROUP BY clause: if this item references table columns (and is not an aggregate or literal)
+            // Oracle throws ORA-00937: not a single-group group function
+            if (sampleRow && (sampleRow[exprUpper] !== undefined || Object.keys(sampleRow).some(k => k.toUpperCase() === exprUpper || k.toUpperCase().endsWith('.' + exprUpper)))) {
+              throw new OracleError('ORA-00937', 'not a single-group group function');
+            }
           }
           row[item.alias] = this.evaluateExpression(item.expr, sampleRow);
         }
       }
 
       if (havingPart) {
-        const passesHaving = this.evaluateHavingCondition(group.rows, row, havingPart);
+        const passesHaving = this.evaluateHavingCondition(group.rows, row, havingPart, groupCols, sampleRow);
         if (!passesHaving) continue;
       }
 
@@ -3002,14 +3037,48 @@ export class OracleDatabase {
     return null;
   }
 
-  evaluateHavingCondition(groupRows, projectedRow, condition) {
+  evaluateHavingCondition(groupRows, projectedRow, condition, groupCols = [], sampleRow = {}) {
     let cond = condition;
-    const aggMatches = condition.match(/\b(COUNT|SUM|AVG|MIN|MAX)\s*\([^)]+\)/gi) || [];
-    for (const agg of aggMatches) {
-      const val = this.evaluateAggregate(agg, groupRows);
-      cond = cond.replace(agg, val !== null ? val : 'NULL');
+    let iterations = 0;
+    while (/\b(COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(DISTINCT\s+|DESTINCT\s+)?([^()]*|\*)\s*\)/i.test(cond) && iterations < 10) {
+      iterations++;
+      cond = cond.replace(/\b(COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(DISTINCT\s+|DESTINCT\s+)?([^()]*|\*)\s*\)/gi, (match) => {
+        const val = this.evaluateAggregate(match, groupRows);
+        if (val === null || val === undefined) return 'NULL';
+        if (typeof val === 'number') return String(val);
+        if (typeof val === 'string') return `'${val.replace(/'/g, "''")}'`;
+        return String(val);
+      });
     }
-    return this.evaluateWhereCondition(projectedRow, cond);
+
+    const upperGroupCols = new Set(groupCols.map(c => c.toUpperCase()));
+    const upperProjectedKeys = new Set(Object.keys(projectedRow).map(k => k.toUpperCase()));
+    const upperSampleKeys = new Set(Object.keys(sampleRow).map(k => k.toUpperCase()));
+
+    const wordMatches = cond.match(/\b[a-zA-Z_][a-zA-Z0-9_$#.]*\b/g) || [];
+    for (const word of wordMatches) {
+      const up = word.toUpperCase();
+      if (/^(AND|OR|NOT|IS|NULL|LIKE|IN|BETWEEN|ESCAPE|TRUE|FALSE|CASE|WHEN|THEN|ELSE|END)$/i.test(up)) continue;
+      if (/^(UPPER|LOWER|INITCAP|INTICAP|LENGTH|TRIM|SUBSTR|CONCAT|ROUND|TRUNC|MOD|ABS|SIGN|CEIL|FLOOR|SQRT|POWER|NVL|DECODE|TO_CHAR|TO_DATE)$/i.test(up)) continue;
+
+      if (upperGroupCols.has(up) || upperProjectedKeys.has(up)) {
+        continue;
+      }
+
+      if (upperSampleKeys.has(up)) {
+        throw new OracleError('ORA-00979', 'not a GROUP BY expression');
+      }
+    }
+
+    const evalRow = {};
+    for (const c of groupCols) {
+      const upperC = c.toUpperCase();
+      if (sampleRow[upperC] !== undefined) evalRow[upperC] = sampleRow[upperC];
+      else if (sampleRow[c] !== undefined) evalRow[c] = sampleRow[c];
+    }
+    Object.assign(evalRow, projectedRow);
+
+    return this.evaluateWhereCondition(evalRow, cond);
   }
 
   evaluateExpression(expr, row) {
@@ -3549,6 +3618,7 @@ export class OracleDatabase {
     let current = '';
     let depth = 0;
     let inQuote = false;
+    let inBetween = false;
     const opRegex = new RegExp(`^\\s+${op}\\s+`, 'i');
 
     for (let i = 0; i < str.length; i++) {
@@ -3559,13 +3629,21 @@ export class OracleDatabase {
         else if (char === ')') depth--;
 
         if (depth === 0) {
+          if (/^\s+BETWEEN\s+/i.test(str.substring(i))) {
+            inBetween = true;
+          }
+
           const remainder = str.substring(i);
           const match = remainder.match(opRegex);
           if (match) {
-            parts.push(current.trim());
-            current = '';
-            i += match[0].length - 1;
-            continue;
+            if (op.toUpperCase() === 'AND' && inBetween) {
+              inBetween = false; // This AND belongs to the BETWEEN clause
+            } else {
+              parts.push(current.trim());
+              current = '';
+              i += match[0].length - 1;
+              continue;
+            }
           }
         }
       }

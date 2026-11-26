@@ -670,6 +670,126 @@ assertTest("Arithmetic with negative column value (-marks + 5 = 15, 10 - marks =
 const negWhereRes = db.executeScript("SELECT id FROM NEG_MARKS_TEST WHERE -marks = 10;");
 assertTest("WHERE clause with -marks filters correctly", negWhereRes[0].rows.length === 1 && negWhereRes[0].rows[0]['ID'] === 1);
 
+// 30. Comprehensive GROUP BY vs HAVING vs WHERE combinations
+db.executeScript(`
+  CREATE TABLE GHW_TEST (
+    id NUMBER NOT NULL,
+    name VARCHAR2(15) NOT NULL,
+    subject VARCHAR2(10) NOT NULL,
+    gender CHAR(1),
+    fee FLOAT,
+    marks NUMBER
+  );
+  INSERT INTO GHW_TEST VALUES (1, 'Rohan', 'Sci', 'M', 4700.98, 90);
+  INSERT INTO GHW_TEST VALUES (2, 'Sara', 'Eng', 'F', 4800.83, 80);
+  INSERT INTO GHW_TEST VALUES (3, 'Riya', 'Sci', 'F', 4200.81, 68);
+  INSERT INTO GHW_TEST VALUES (4, 'Aman', 'Math', 'M', 4200.81, 92);
+`);
+
+// 1. WHERE only
+const ghw1 = db.executeScript("SELECT id, subject FROM GHW_TEST WHERE marks >= 80;");
+assertTest("GHW 1: WHERE only filters rows correctly", ghw1[0].rows.length === 3);
+
+// 2. GROUP BY only
+const ghw2 = db.executeScript("SELECT subject, COUNT(*), AVG(marks) FROM GHW_TEST GROUP BY subject;");
+assertTest("GHW 2: GROUP BY only groups and aggregates", ghw2[0].rows.length === 3);
+
+// 3. WHERE + GROUP BY
+const ghw3 = db.executeScript("SELECT subject, COUNT(*), AVG(marks) FROM GHW_TEST WHERE marks >= 70 GROUP BY subject;");
+assertTest("GHW 3: WHERE filters rows prior to GROUP BY", ghw3[0].rows.length === 3 && ghw3[0].rows.find(r => r.SUBJECT === 'Sci')['COUNT(*)'] === 1);
+
+// 4. GROUP BY + HAVING
+const ghw4 = db.executeScript("SELECT subject, COUNT(*) FROM GHW_TEST GROUP BY subject HAVING COUNT(*) > 1;");
+assertTest("GHW 4: GROUP BY + HAVING filters groups", ghw4[0].rows.length === 1 && ghw4[0].rows[0].SUBJECT === 'Sci');
+
+// 5. WHERE + GROUP BY + HAVING
+const ghw5 = db.executeScript("SELECT subject, COUNT(*), AVG(marks) FROM GHW_TEST WHERE marks >= 70 GROUP BY subject HAVING COUNT(*) >= 1;");
+assertTest("GHW 5: WHERE + GROUP BY + HAVING combines properly", ghw5[0].rows.length === 3);
+
+// 6. HAVING without GROUP BY
+const ghw6 = db.executeScript("SELECT COUNT(*), AVG(marks) FROM GHW_TEST HAVING COUNT(*) > 2;");
+assertTest("GHW 6: HAVING without GROUP BY returns single summary row when condition met", ghw6[0].rows.length === 1 && ghw6[0].rows[0]['COUNT(*)'] === 4);
+
+const ghw7 = db.executeScript("SELECT COUNT(*), AVG(marks) FROM GHW_TEST HAVING COUNT(*) > 10;");
+assertTest("GHW 7: HAVING without GROUP BY filters out group when condition not met", ghw7[0].rows.length === 0);
+
+// 7. WHERE with group function
+const ghw8 = db.executeScript("SELECT subject FROM GHW_TEST WHERE COUNT(*) > 1;");
+assertTest("GHW 8: Group function in WHERE throws ORA-00934", ghw8[0].type === 'ERROR' && ghw8[0].error.code === 'ORA-00934');
+
+// 8. GROUP BY + ORDER BY alias & aggregate
+const ghw9 = db.executeScript("SELECT subject, COUNT(*) AS cnt FROM GHW_TEST GROUP BY subject ORDER BY cnt DESC;");
+assertTest("GHW 9: GROUP BY + ORDER BY alias orders correctly", ghw9[0].rows[0].CNT === 2 && ghw9[0].rows[0].SUBJECT === 'Sci');
+
+const ghw10 = db.executeScript("SELECT subject, COUNT(*) FROM GHW_TEST GROUP BY subject ORDER BY COUNT(*) DESC;");
+assertTest("GHW 10: GROUP BY + ORDER BY aggregate orders correctly", ghw10[0].rows[0]['COUNT(*)'] === 2);
+
+// 9. Multiple columns in GROUP BY
+const ghw11 = db.executeScript("SELECT subject, gender, COUNT(*) FROM GHW_TEST GROUP BY subject, gender;");
+assertTest("GHW 11: Multiple columns in GROUP BY forms distinct composite groups", ghw11[0].rows.length === 4);
+
+// 10. HAVING with unprojected GROUP BY column
+const ghw12 = db.executeScript("SELECT COUNT(*) FROM GHW_TEST GROUP BY subject HAVING subject = 'Sci';");
+assertTest("GHW 12: HAVING with unprojected GROUP BY column succeeds", ghw12[0].rows.length === 1 && ghw12[0].rows[0]['COUNT(*)'] === 2);
+
+// 11. HAVING with alias
+const ghw13 = db.executeScript("SELECT subject AS sub, COUNT(*) AS cnt FROM GHW_TEST GROUP BY subject HAVING cnt > 1;");
+assertTest("GHW 13: HAVING with projection alias succeeds", ghw13[0].rows.length === 1 && ghw13[0].rows[0].SUB === 'Sci');
+
+// 12. HAVING with complex boolean logic (AND, OR, NOT, IN, LIKE, BETWEEN)
+const ghw14 = db.executeScript("SELECT subject, COUNT(*), AVG(marks) FROM GHW_TEST GROUP BY subject HAVING COUNT(*) > 1 AND AVG(marks) > 70;");
+assertTest("GHW 14: HAVING with AND succeeds", ghw14[0].rows.length === 1 && ghw14[0].rows[0].SUBJECT === 'Sci');
+
+const ghw15 = db.executeScript("SELECT subject, COUNT(*) FROM GHW_TEST GROUP BY subject HAVING COUNT(*) > 1 OR AVG(marks) > 90;");
+assertTest("GHW 15: HAVING with OR succeeds", ghw15[0].rows.length === 2);
+
+const ghw16 = db.executeScript("SELECT subject, COUNT(*) FROM GHW_TEST GROUP BY subject HAVING NOT (COUNT(*) > 1);");
+assertTest("GHW 16: HAVING with NOT succeeds", ghw16[0].rows.length === 2);
+
+const ghw17 = db.executeScript("SELECT subject, COUNT(*) FROM GHW_TEST GROUP BY subject HAVING subject IN ('Sci', 'Math') AND COUNT(*) >= 1;");
+assertTest("GHW 17: HAVING with IN list succeeds", ghw17[0].rows.length === 2);
+
+const ghw18 = db.executeScript("SELECT subject, COUNT(*) FROM GHW_TEST GROUP BY subject HAVING subject LIKE 'S%' AND AVG(marks) >= 60;");
+assertTest("GHW 18: HAVING with LIKE succeeds", ghw18[0].rows.length === 1 && ghw18[0].rows[0].SUBJECT === 'Sci');
+
+const ghw19 = db.executeScript("SELECT subject, AVG(marks) FROM GHW_TEST GROUP BY subject HAVING AVG(marks) BETWEEN 75 AND 85;");
+assertTest("GHW 19: HAVING with BETWEEN operator correctly filters", ghw19[0].rows.length === 2);
+
+// 13. HAVING with expressions on aggregates
+const ghw20 = db.executeScript("SELECT subject FROM GHW_TEST GROUP BY subject HAVING MAX(marks) - MIN(marks) > 10;");
+assertTest("GHW 20: HAVING with arithmetic on aggregates succeeds", ghw20[0].rows.length === 1 && ghw20[0].rows[0].SUBJECT === 'Sci');
+
+const ghw21 = db.executeScript("SELECT subject, COUNT(*) FROM GHW_TEST GROUP BY subject HAVING ROUND(AVG(marks), 1) >= 79;");
+assertTest("GHW 21: HAVING with function on aggregate succeeds", ghw21[0].rows.length === 3);
+
+// 14. Non-group expression errors (ORA-00979)
+const ghw22 = db.executeScript("SELECT subject, name, COUNT(*) FROM GHW_TEST GROUP BY subject;");
+assertTest("GHW 22: Non-group column in SELECT with GROUP BY throws ORA-00979", ghw22[0].type === 'ERROR' && ghw22[0].error.code === 'ORA-00979');
+
+const ghw23 = db.executeScript("SELECT subject, COUNT(*) FROM GHW_TEST GROUP BY subject HAVING fee > 4000;");
+assertTest("GHW 23: Non-group column in HAVING without aggregate throws ORA-00979", ghw23[0].type === 'ERROR' && ghw23[0].error.code === 'ORA-00979');
+
+// 15. Single-group group function errors (ORA-00937)
+const ghw24 = db.executeScript("SELECT subject FROM GHW_TEST HAVING COUNT(*) > 1;");
+assertTest("GHW 24: Non-group column without GROUP BY (HAVING) throws ORA-00937", ghw24[0].type === 'ERROR' && ghw24[0].error.code === 'ORA-00937');
+
+const ghw25 = db.executeScript("SELECT subject, COUNT(*) FROM GHW_TEST;");
+assertTest("GHW 25: Non-group column without GROUP BY (aggregate) throws ORA-00937", ghw25[0].type === 'ERROR' && ghw25[0].error.code === 'ORA-00937');
+
+// 16. Alternate HAVING before GROUP BY syntax
+const ghw26 = db.executeScript("SELECT subject, COUNT(*) FROM GHW_TEST HAVING COUNT(*) > 1 GROUP BY subject;");
+assertTest("GHW 26: HAVING placed before GROUP BY executes properly", ghw26[0].rows.length === 1 && ghw26[0].rows[0].SUBJECT === 'Sci');
+
+const ghw27 = db.executeScript("SELECT subject, COUNT(*) FROM GHW_TEST WHERE marks >= 70 HAVING COUNT(*) >= 1 GROUP BY subject;");
+assertTest("GHW 27: WHERE + HAVING before GROUP BY executes properly", ghw27[0].rows.length === 3);
+
+// 17. Out-of-order clauses throw ORA-00933
+const ghw28 = db.executeScript("SELECT subject FROM GHW_TEST GROUP BY subject WHERE marks > 80;");
+assertTest("GHW 28: Out of order WHERE after GROUP BY throws ORA-00933", ghw28[0].type === 'ERROR' && ghw28[0].error.code === 'ORA-00933');
+
+const ghw29 = db.executeScript("SELECT subject FROM GHW_TEST ORDER BY subject WHERE marks > 80;");
+assertTest("GHW 29: Out of order WHERE after ORDER BY throws ORA-00933", ghw29[0].type === 'ERROR' && ghw29[0].error.code === 'ORA-00933');
+
 
 console.log('==============================================');
 console.log(`  Tests Passed: ${passedCount} / ${totalCount}`);
