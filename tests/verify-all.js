@@ -644,6 +644,32 @@ assertTest("Unrecognized function call throws ORA-00904", invalidFuncRes[0].type
 const groupInWhereRes = db.executeScript("SELECT id FROM FUNCS_TEST WHERE COUNT(*) > 1;");
 assertTest("Group function in WHERE clause throws ORA-00934", groupInWhereRes[0].type === 'ERROR' && groupInWhereRes[0].error.code === 'ORA-00934');
 
+// 29. Unary minus and expressions on negative column values
+db.executeScript(`
+  CREATE TABLE NEG_MARKS_TEST (
+    id NUMBER NOT NULL,
+    marks NUMBER
+  );
+  INSERT INTO NEG_MARKS_TEST VALUES (1, -10);
+  INSERT INTO NEG_MARKS_TEST VALUES (2, 20);
+  INSERT INTO NEG_MARKS_TEST VALUES (3, 0);
+  INSERT INTO NEG_MARKS_TEST VALUES (4, NULL);
+`);
+
+const negRes = db.executeScript("SELECT id, marks, -marks AS neg_marks, +marks AS pos_marks FROM NEG_MARKS_TEST ORDER BY id ASC;");
+assertTest("SELECT -marks negates negative value -10 to 10", negRes[0].rows[0]['NEG_MARKS'] === 10);
+assertTest("SELECT -marks negates positive value 20 to -20", negRes[0].rows[1]['NEG_MARKS'] === -20);
+assertTest("SELECT -marks handles zero and NULL", negRes[0].rows[2]['NEG_MARKS'] === 0 && negRes[0].rows[3]['NEG_MARKS'] === null);
+assertTest("SELECT +marks preserves negative and positive signs", negRes[0].rows[0]['POS_MARKS'] === -10 && negRes[0].rows[1]['POS_MARKS'] === 20);
+
+const negArithRes = db.executeScript("SELECT -marks + 5 AS c1, 10 - marks AS c2 FROM NEG_MARKS_TEST WHERE id = 1;");
+assertTest("Arithmetic with negative column value (-marks + 5 = 15, 10 - marks = 20)", 
+  negArithRes[0].rows[0]['C1'] === 15 && negArithRes[0].rows[0]['C2'] === 20
+);
+
+const negWhereRes = db.executeScript("SELECT id FROM NEG_MARKS_TEST WHERE -marks = 10;");
+assertTest("WHERE clause with -marks filters correctly", negWhereRes[0].rows.length === 1 && negWhereRes[0].rows[0]['ID'] === 1);
+
 
 console.log('==============================================');
 console.log(`  Tests Passed: ${passedCount} / ${totalCount}`);

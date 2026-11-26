@@ -3034,12 +3034,15 @@ export class OracleDatabase {
       }
     }
 
-    // Unary plus/minus preceding an expression: e.g. -ABS(fee), +ROUND(fee, 2), -NULL, +NULL
-    const unaryFuncMatch = trimmed.match(/^([+-])\s*([a-zA-Z_]\w*\s*\([\s\S]*\)|NULL)$/i);
-    if (unaryFuncMatch) {
-      const sign = unaryFuncMatch[1] === '-' ? -1 : 1;
-      const val = this.evaluateExpression(unaryFuncMatch[2], row);
-      return (val === null || val === undefined) ? null : this.cleanNumber(sign * Number(val));
+    // Unary plus/minus preceding an expression: e.g. -marks, -ABS(fee), +ROUND(fee, 2), -NULL, +NULL
+    const unaryMatch = trimmed.match(/^([+-])\s*([a-zA-Z_][a-zA-Z0-9_$#.]*|[a-zA-Z_]\w*\s*\([\s\S]*\)|NULL)$/i);
+    if (unaryMatch) {
+      const sign = unaryMatch[1] === '-' ? -1 : 1;
+      const val = this.evaluateExpression(unaryMatch[2], row);
+      if (val === null || val === undefined) return null;
+      const num = Number(val);
+      if (isNaN(num)) throw new OracleError('ORA-01722', 'invalid number');
+      return this.cleanNumber(sign * num);
     }
 
     const nvlMatch = trimmed.match(/^NVL\s*\(\s*([\s\S]+?)\s*,\s*([\s\S]+?)\s*\)$/i);
@@ -3301,7 +3304,10 @@ export class OracleDatabase {
         while (/\b(ABS|ROUND|TRUNC|MOD|SIGN|CEIL|FLOOR|POWER|SQRT|NVL|DECODE|UPPER|LOWER|INITCAP|INTICAP|LENGTH|TRIM|SUBSTR|CONCAT)\s*\([^()]*\)/i.test(evalStr)) {
           evalStr = evalStr.replace(/\b(ABS|ROUND|TRUNC|MOD|SIGN|CEIL|FLOOR|POWER|SQRT|NVL|DECODE|UPPER|LOWER|INITCAP|INTICAP|LENGTH|TRIM|SUBSTR|CONCAT)\s*\(([^()]*)\)/gi, (funcCall) => {
             const val = this.evaluateExpression(funcCall, row);
-            return (val === null || val === undefined) ? 'NULL' : String(Number(val));
+            if (val === null || val === undefined) return 'NULL';
+            const num = Number(val);
+            if (isNaN(num)) return 'NaN';
+            return num < 0 ? `(${num})` : String(num);
           });
         }
 
@@ -3335,7 +3341,7 @@ export class OracleDatabase {
               hasInvalidNumber = true;
               return 'NaN';
             }
-            return String(num);
+            return num < 0 ? `(${num})` : String(num);
           }
 
           // If not in row and we have a valid row, check if it's a group function or an unrecognized column identifier
@@ -3359,6 +3365,9 @@ export class OracleDatabase {
         if (/\bNULL\b/i.test(evalStr)) {
           return null;
         }
+
+        // Normalize adjacent signs (e.g. -- -> +, +- -> -, -+ -> -) to prevent JS syntax error on prefix operators
+        evalStr = evalStr.replace(/--/g, ' + ').replace(/\+\+/g, ' + ').replace(/\+-/g, ' - ').replace(/-\+/g, ' - ');
 
         if (/^[\d\s+\-*/().]+$/.test(evalStr)) {
           const res = Function(`'use strict'; return (${evalStr});`)();
