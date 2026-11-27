@@ -20,6 +20,7 @@ function loadComparisonTables() {
 export const tablesStore = writable(oracleDb.getTables());
 export const comparisonTablesStore = writable(loadComparisonTables());
 export const viewsStore = writable(oracleDb.getViews());
+export const indexesStore = writable(oracleDb.getIndexes());
 export const databasesStore = writable(oracleDb.getDatabases());
 export const activeDatabaseStore = writable(oracleDb.getActiveDatabase());
 
@@ -34,6 +35,7 @@ comparisonTablesStore.subscribe(tables => {
 oracleDb.onChange(() => {
   tablesStore.set({ ...oracleDb.getTables() });
   viewsStore.set({ ...oracleDb.getViews() });
+  indexesStore.set({ ...oracleDb.getIndexes() });
   databasesStore.set({ ...oracleDb.getDatabases() });
   activeDatabaseStore.set(oracleDb.getActiveDatabase());
 });

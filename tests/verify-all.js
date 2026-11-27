@@ -790,6 +790,102 @@ assertTest("GHW 28: Out of order WHERE after GROUP BY throws ORA-00933", ghw28[0
 const ghw29 = db.executeScript("SELECT subject FROM GHW_TEST ORDER BY subject WHERE marks > 80;");
 assertTest("GHW 29: Out of order WHERE after ORDER BY throws ORA-00933", ghw29[0].type === 'ERROR' && ghw29[0].error.code === 'ORA-00933');
 
+// 18. Precedence pipeline: ORDER BY unprojected group cols and aggregates in grouped queries
+const ghw30 = db.executeScript("SELECT subject FROM GHW_TEST GROUP BY subject ORDER BY COUNT(*) DESC;");
+assertTest("GHW 30: GROUP BY + ORDER BY unprojected aggregate succeeds", ghw30[0].rows.length === 3 && ghw30[0].rows[0].SUBJECT === 'Sci');
+
+const ghw31 = db.executeScript("SELECT COUNT(*) FROM GHW_TEST GROUP BY subject ORDER BY subject ASC;");
+assertTest("GHW 31: GROUP BY + ORDER BY unprojected group col succeeds", ghw31[0].rows.length === 3 && ghw31[0].rows[0]['COUNT(*)'] === 1 && ghw31[0].rows[2]['COUNT(*)'] === 2);
+
+const ghw32 = db.executeScript("SELECT subject, COUNT(*) FROM GHW_TEST GROUP BY subject ORDER BY marks DESC;");
+assertTest("GHW 32: GROUP BY + ORDER BY non-group col throws ORA-00979", ghw32[0].type === 'ERROR' && ghw32[0].error.code === 'ORA-00979');
+
+// 19. Indexes: CREATE INDEX, UNIQUE, DROP INDEX, constraints
+db.executeScript(`
+  DROP TABLE StudentIndexTest;
+  CREATE TABLE StudentIndexTest (
+    id NUMBER NOT NULL,
+    name VARCHAR2(15) NOT NULL,
+    subject VARCHAR2(10) NOT NULL,
+    marks NUMBER,
+    city VARCHAR2(20),
+    email VARCHAR2(50)
+  );
+`);
+
+// 19.1 Basic CREATE INDEX (User command: CREATE INDEX idx_student_city ON Student(city);)
+const idx1 = db.executeScript("CREATE INDEX idx_student_city ON StudentIndexTest(city);");
+assertTest("CREATE INDEX creates index without syntax error", idx1[0].type === 'DDL' && idx1[0].message === 'Index created.');
+assertTest("db.getIndexes() includes IDX_STUDENT_CITY", !!db.getIndexes().IDX_STUDENT_CITY);
+assertTest("Index details: tableName and column", db.getIndexes().IDX_STUDENT_CITY.tableName === 'STUDENTINDEXTEST' && db.getIndexes().IDX_STUDENT_CITY.columns[0].name === 'CITY');
+
+// 19.2 Composite Index with order
+const idx2 = db.executeScript("CREATE INDEX idx_stu_sub_marks ON StudentIndexTest(subject DESC, marks ASC);");
+assertTest("CREATE composite INDEX with DESC/ASC", idx2[0].type === 'DDL' && idx2[0].message === 'Index created.');
+assertTest("Composite index has correct column definitions", db.getIndexes().IDX_STU_SUB_MARKS.columns[0].order === 'DESC' && db.getIndexes().IDX_STU_SUB_MARKS.columns[1].order === 'ASC');
+
+// 19.3 Quoted identifier index
+const idx3 = db.executeScript('CREATE INDEX "idx_quoted" ON "StudentIndexTest"("name");');
+assertTest("CREATE INDEX with quoted identifiers", idx3[0].type === 'DDL' && !!db.getIndexes().IDX_QUOTED);
+
+// 19.4 USER_INDEXES catalog view
+const idxCat = db.executeScript("SELECT index_name, table_name, uniqueness FROM user_indexes WHERE index_name = 'IDX_STUDENT_CITY';");
+assertTest("USER_INDEXES returns created index", idxCat[0].rows.length === 1 && idxCat[0].rows[0].UNIQUENESS === 'NONUNIQUE');
+
+// 19.5 USER_IND_COLUMNS catalog view
+const colCat = db.executeScript("SELECT index_name, column_name, column_position, descend FROM user_ind_columns WHERE index_name = 'IDX_STUDENT_CITY';");
+assertTest("USER_IND_COLUMNS returns column info", colCat[0].rows.length === 1 && colCat[0].rows[0].COLUMN_NAME === 'CITY' && colCat[0].rows[0].DESCEND === 'ASC');
+
+// 19.6 Index error validations
+const idxErrTbl = db.executeScript("CREATE INDEX idx_bad ON NoSuchTable(id);");
+assertTest("CREATE INDEX on missing table throws ORA-00942", idxErrTbl[0].type === 'ERROR' && idxErrTbl[0].error.code === 'ORA-00942');
+
+const idxErrCol = db.executeScript("CREATE INDEX idx_bad ON StudentIndexTest(no_col);");
+assertTest("CREATE INDEX on missing col throws ORA-00904", idxErrCol[0].type === 'ERROR' && idxErrCol[0].error.code === 'ORA-00904');
+
+const idxErrDupCol = db.executeScript("CREATE INDEX idx_bad ON StudentIndexTest(city, city);");
+assertTest("CREATE INDEX with duplicate col throws ORA-00957", idxErrDupCol[0].type === 'ERROR' && idxErrDupCol[0].error.code === 'ORA-00957');
+
+const idxErrDupName = db.executeScript("CREATE INDEX idx_student_city ON StudentIndexTest(city);");
+assertTest("CREATE INDEX with duplicate name throws ORA-00955", idxErrDupName[0].type === 'ERROR' && idxErrDupName[0].error.code === 'ORA-00955');
+
+const idxErrObjName = db.executeScript("CREATE INDEX StudentIndexTest ON StudentIndexTest(city);");
+assertTest("CREATE INDEX conflicting with table name throws ORA-00955", idxErrObjName[0].type === 'ERROR' && idxErrObjName[0].error.code === 'ORA-00955');
+
+// 19.7 Unique index and DML constraint enforcement
+db.executeScript(`
+  INSERT INTO StudentIndexTest (id, name, subject, email) VALUES (1, 'Rohan', 'Sci', 'dup@test.com');
+  INSERT INTO StudentIndexTest (id, name, subject, email) VALUES (2, 'Sara', 'Eng', 'dup@test.com');
+`);
+
+const uniqErrExisting = db.executeScript("CREATE UNIQUE INDEX idx_stu_email_uniq ON StudentIndexTest(email);");
+assertTest("CREATE UNIQUE INDEX on duplicate data throws ORA-00001", uniqErrExisting[0].type === 'ERROR' && uniqErrExisting[0].error.code === 'ORA-00001');
+
+db.executeScript("UPDATE StudentIndexTest SET email = 'sara@test.com' WHERE id = 2;");
+const uniqSuccess = db.executeScript("CREATE UNIQUE INDEX idx_stu_email_uniq ON StudentIndexTest(email);");
+assertTest("CREATE UNIQUE INDEX succeeds after duplicates resolved", uniqSuccess[0].type === 'DDL' && db.getIndexes().IDX_STU_EMAIL_UNIQ.isUnique);
+
+const insertDupErr = db.executeScript("INSERT INTO StudentIndexTest (id, name, subject, email) VALUES (3, 'Aman', 'Math', 'dup@test.com');");
+assertTest("INSERT duplicate on unique index throws ORA-00001", insertDupErr[0].type === 'ERROR' && insertDupErr[0].error.code === 'ORA-00001');
+
+const updateDupErr = db.executeScript("UPDATE StudentIndexTest SET email = 'dup@test.com' WHERE id = 2;");
+assertTest("UPDATE duplicate on unique index throws ORA-00001", updateDupErr[0].type === 'ERROR' && updateDupErr[0].error.code === 'ORA-00001');
+
+const insertNull1 = db.executeScript("INSERT INTO StudentIndexTest (id, name, subject, email) VALUES (4, 'Null1', 'Sci', NULL);");
+const insertNull2 = db.executeScript("INSERT INTO StudentIndexTest (id, name, subject, email) VALUES (5, 'Null2', 'Sci', NULL);");
+assertTest("Unique index allows multiple NULL values", insertNull1[0].type === 'DML' && insertNull2[0].type === 'DML');
+
+// 19.8 DROP INDEX
+const dropIdxSuccess = db.executeScript("DROP INDEX idx_student_city;");
+assertTest("DROP INDEX succeeds", dropIdxSuccess[0].type === 'DDL' && dropIdxSuccess[0].message === 'Index dropped.' && !db.getIndexes().IDX_STUDENT_CITY);
+
+const dropIdxMissing = db.executeScript("DROP INDEX idx_student_city;");
+assertTest("DROP INDEX on non-existent index throws ORA-01418", dropIdxMissing[0].type === 'ERROR' && dropIdxMissing[0].error.code === 'ORA-01418');
+
+// 19.9 DROP TABLE cascades index cleanup
+db.executeScript("DROP TABLE StudentIndexTest;");
+assertTest("DROP TABLE automatically cascades and cleans up remaining indexes", !db.getIndexes().IDX_STU_SUB_MARKS && !db.getIndexes().IDX_QUOTED && !db.getIndexes().IDX_STU_EMAIL_UNIQ);
+
 
 console.log('==============================================');
 console.log(`  Tests Passed: ${passedCount} / ${totalCount}`);

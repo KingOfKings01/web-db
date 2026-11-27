@@ -64,6 +64,7 @@ const DEFAULT_DATABASE = {
     }
   },
   views: {},
+  indexes: {},
   currentContainer: 'SQL_CLASS',
   currentUser: 'STUDENT',
   users: {
@@ -122,6 +123,7 @@ const DEFAULT_DATABASES = {
     password: 'password',
     tables: JSON.parse(JSON.stringify(DEFAULT_DATABASE.tables)),
     views: {},
+    indexes: {},
     connected: true
   },
   'ORACLE26': {
@@ -132,12 +134,14 @@ const DEFAULT_DATABASES = {
       DUAL: JSON.parse(JSON.stringify(DEFAULT_DATABASE.tables.DUAL))
     },
     views: {},
+    indexes: {},
     connected: false
   }
 };
 
 DEFAULT_DATABASE.databases = DEFAULT_DATABASES;
 DEFAULT_DATABASE.activeDatabase = 'SQL_CLASS';
+DEFAULT_DATABASE.indexes = {};
 
 export class OracleError extends Error {
   constructor(code, message, line = null) {
@@ -210,6 +214,7 @@ export class OracleDatabase {
             if (!parsed.userPrivileges) parsed.userPrivileges = JSON.parse(JSON.stringify(DEFAULT_DATABASE.userPrivileges));
             if (!parsed.userRoles) parsed.userRoles = JSON.parse(JSON.stringify(DEFAULT_DATABASE.userRoles));
             if (!parsed.tabPrivileges) parsed.tabPrivileges = {};
+            if (!parsed.indexes) parsed.indexes = {};
 
             if (!parsed.databases) {
               parsed.databases = JSON.parse(JSON.stringify(DEFAULT_DATABASES));
@@ -219,6 +224,9 @@ export class OracleDatabase {
                   ...parsed.tables
                 };
               }
+            }
+            for (const dbKey of Object.keys(parsed.databases || {})) {
+              if (!parsed.databases[dbKey].indexes) parsed.databases[dbKey].indexes = {};
             }
             if (!parsed.activeDatabase) {
               parsed.activeDatabase = 'SQL_CLASS';
@@ -261,6 +269,14 @@ export class OracleDatabase {
     }
     if (!this.db.activeDatabase) {
       this.db.activeDatabase = 'SQL_CLASS';
+    }
+    if (!this.db.indexes) {
+      this.db.indexes = {};
+    }
+    for (const dbKey of Object.keys(this.db.databases || {})) {
+      if (!this.db.databases[dbKey].indexes) {
+        this.db.databases[dbKey].indexes = {};
+      }
     }
   }
 
@@ -673,6 +689,21 @@ export class OracleDatabase {
     return this.db.views || {};
   }
 
+  getIndexes() {
+    this.ensureDatabases();
+    const active = (this.db.activeDatabase || 'SQL_CLASS').toUpperCase();
+    if (this.db.databases && this.db.databases[active]) {
+      if (!this.db.databases[active].indexes) {
+        this.db.databases[active].indexes = {};
+      }
+      return this.db.databases[active].indexes;
+    }
+    if (!this.db.indexes) {
+      this.db.indexes = {};
+    }
+    return this.db.indexes;
+  }
+
   getTable(name) {
     if (!name) return null;
     const upper = name.toUpperCase();
@@ -943,6 +974,61 @@ export class OracleDatabase {
       };
     }
 
+    if (upper === 'USER_INDEXES' || upper === 'ALL_INDEXES') {
+      const indexes = this.getIndexes();
+      const rows = Object.values(indexes).map(idx => ({
+        INDEX_NAME: idx.name,
+        INDEX_TYPE: 'NORMAL',
+        TABLE_OWNER: (this.db.currentUser || 'STUDENT').toUpperCase(),
+        TABLE_NAME: idx.tableName,
+        TABLE_TYPE: 'TABLE',
+        UNIQUENESS: idx.isUnique ? 'UNIQUE' : 'NONUNIQUE',
+        STATUS: 'VALID'
+      }));
+      return {
+        name: upper,
+        columns: [
+          { name: 'INDEX_NAME', type: 'VARCHAR2(128)', isPk: true, nullable: false },
+          { name: 'INDEX_TYPE', type: 'VARCHAR2(27)', isPk: false, nullable: true },
+          { name: 'TABLE_OWNER', type: 'VARCHAR2(128)', isPk: false, nullable: false },
+          { name: 'TABLE_NAME', type: 'VARCHAR2(128)', isPk: false, nullable: false },
+          { name: 'TABLE_TYPE', type: 'VARCHAR2(11)', isPk: false, nullable: true },
+          { name: 'UNIQUENESS', type: 'VARCHAR2(9)', isPk: false, nullable: true },
+          { name: 'STATUS', type: 'VARCHAR2(8)', isPk: false, nullable: true }
+        ],
+        rows
+      };
+    }
+
+    if (upper === 'USER_IND_COLUMNS' || upper === 'ALL_IND_COLUMNS') {
+      const indexes = this.getIndexes();
+      const rows = [];
+      for (const idx of Object.values(indexes)) {
+        (idx.columns || []).forEach((col, i) => {
+          rows.push({
+            INDEX_NAME: idx.name,
+            TABLE_NAME: idx.tableName,
+            COLUMN_NAME: col.name,
+            COLUMN_POSITION: i + 1,
+            COLUMN_LENGTH: 22,
+            DESCEND: col.order === 'DESC' ? 'DESC' : 'ASC'
+          });
+        });
+      }
+      return {
+        name: upper,
+        columns: [
+          { name: 'INDEX_NAME', type: 'VARCHAR2(128)', isPk: false, nullable: false },
+          { name: 'TABLE_NAME', type: 'VARCHAR2(128)', isPk: false, nullable: false },
+          { name: 'COLUMN_NAME', type: 'VARCHAR2(128)', isPk: false, nullable: false },
+          { name: 'COLUMN_POSITION', type: 'NUMBER', isPk: false, nullable: false },
+          { name: 'COLUMN_LENGTH', type: 'NUMBER', isPk: false, nullable: true },
+          { name: 'DESCEND', type: 'VARCHAR2(4)', isPk: false, nullable: true }
+        ],
+        rows
+      };
+    }
+
     return null;
   }
 
@@ -1164,7 +1250,7 @@ export class OracleDatabase {
    * Execute a single SQL statement.
    */
   executeOne(sql) {
-    const trimmed = sql.trim();
+    const trimmed = (sql || '').trim().replace(/;+$/, '').trim();
     if (!trimmed) {
       return { type: 'EMPTY', command: sql };
     }
@@ -1311,6 +1397,11 @@ export class OracleDatabase {
         command: sql,
         message: `Database '${dbName.toUpperCase()}' created.`
       };
+    }
+
+    // CREATE [UNIQUE] INDEX
+    if (/^CREATE\s+(?:UNIQUE\s+)?INDEX\b/i.test(sql.trim())) {
+      return this.execCreateIndex(sql);
     }
 
     const tableMatch = sql.match(/^CREATE\s+TABLE\s+([a-zA-Z0-9_$#]+)\s*\(([\s\S]+)\)$/i);
@@ -1498,6 +1589,108 @@ export class OracleDatabase {
     };
   }
 
+  execCreateIndex(sql) {
+    const clean = sql.replace(/;+$/, '').trim();
+    const createIndexRegex = /^CREATE\s+(UNIQUE\s+)?INDEX\s+(?:(?:"([^"]+)"|([a-zA-Z0-9_$#]+))\.)?(?:"([^"]+)"|([a-zA-Z0-9_$#]+))\s+ON\s+(?:(?:"([^"]+)"|([a-zA-Z0-9_$#]+))\.)?(?:"([^"]+)"|([a-zA-Z0-9_$#]+))\s*\(([\s\S]+?)\)(?:\s+[\s\S]*)?$/i;
+    const match = clean.match(createIndexRegex);
+    if (!match) {
+      throw new OracleError('ORA-00901', 'invalid CREATE command syntax');
+    }
+
+    const isUnique = !!match[1];
+    const indexName = (match[4] || match[5]).toUpperCase();
+    const tableName = (match[8] || match[9]).toUpperCase();
+    const colsPart = match[10].trim();
+
+    if (!colsPart) {
+      throw new OracleError('ORA-00904', ': invalid identifier');
+    }
+
+    const indexes = this.getIndexes();
+    const tables = this.getTables();
+    const views = this.getViews();
+
+    if (indexes[indexName] || tables[indexName] || views[indexName]) {
+      throw new OracleError('ORA-00955', 'name is already used by an existing object');
+    }
+
+    const table = this.getTable(tableName);
+    if (!table) {
+      throw new OracleError('ORA-00942', 'table or view does not exist');
+    }
+
+    // Parse columns: "col1 [ASC|DESC], col2 [ASC|DESC]"
+    const rawCols = colsPart.split(',').map(c => c.trim());
+    const parsedColumns = [];
+    const seenCols = new Set();
+
+    for (const rawCol of rawCols) {
+      if (!rawCol) {
+        throw new OracleError('ORA-00904', ': invalid identifier');
+      }
+
+      const colMatch = rawCol.match(/^(?:"([^"]+)"|([a-zA-Z0-9_$#]+))(?:\s+(ASC|DESC))?$/i);
+      if (!colMatch) {
+        throw new OracleError('ORA-00904', `"${rawCol}": invalid identifier`);
+      }
+
+      const colName = (colMatch[1] || colMatch[2]).toUpperCase();
+      const colOrder = (colMatch[3] || 'ASC').toUpperCase();
+
+      if (seenCols.has(colName)) {
+        throw new OracleError('ORA-00957', 'duplicate column name');
+      }
+      seenCols.add(colName);
+
+      const colMeta = table.columns.find(c => c.name === colName);
+      if (!colMeta) {
+        throw new OracleError('ORA-00904', `"${colName}": invalid identifier`);
+      }
+
+      parsedColumns.push({
+        name: colName,
+        order: colOrder
+      });
+    }
+
+    // Check unique constraint across existing rows
+    if (isUnique) {
+      const seenKeys = new Set();
+      for (const row of table.rows) {
+        const allNull = parsedColumns.every(c => row[c.name] === null || row[c.name] === undefined);
+        if (allNull) continue;
+
+        const key = parsedColumns.map(c => {
+          const v = row[c.name];
+          return (v === null || v === undefined) ? '\x00NULL\x00' : String(v);
+        }).join('\x01');
+
+        if (seenKeys.has(key)) {
+          throw new OracleError('ORA-00001', `unique constraint (${indexName}) violated`);
+        }
+        seenKeys.add(key);
+      }
+    }
+
+    indexes[indexName] = {
+      name: indexName,
+      tableName: tableName,
+      isUnique: isUnique,
+      columns: parsedColumns,
+      created: this.formatSysdate()
+    };
+    if (this.db.indexes) {
+      this.db.indexes[indexName] = indexes[indexName];
+    }
+
+    this.notifyChange();
+    return {
+      type: 'DDL',
+      command: sql,
+      message: 'Index created.'
+    };
+  }
+
   splitColumnDefs(str) {
     const trimmed = str.trim();
     if (trimmed.startsWith(',')) {
@@ -1584,6 +1777,11 @@ export class OracleDatabase {
       return { type: 'DDL', command: sql, message: 'Database dropped.' };
     }
 
+    const dropIndexMatch = clean.match(/^DROP\s+INDEX\s+(?:(?:"([^"]+)"|([a-zA-Z0-9_$#]+))\.)?(?:"([^"]+)"|([a-zA-Z0-9_$#]+))(?:\s+.*)?$/i);
+    if (dropIndexMatch) {
+      return this.execDropIndex(clean, dropIndexMatch);
+    }
+
     const dropTableMatch = clean.match(/^DROP\s+TABLE\s+([a-zA-Z0-9_$#]+)(?:\s+PURGE)?(?:\s+CASCADE\s+CONSTRAINTS)?/i);
     if (dropTableMatch) {
       const tableName = dropTableMatch[1].toUpperCase();
@@ -1598,6 +1796,18 @@ export class OracleDatabase {
       if (this.db.tables && this.db.tables[tableName]) {
         delete this.db.tables[tableName];
       }
+
+      // Clean up indexes associated with this table
+      const indexes = this.getIndexes();
+      for (const idxName of Object.keys(indexes)) {
+        if (indexes[idxName].tableName === tableName) {
+          delete indexes[idxName];
+          if (this.db.indexes && this.db.indexes[idxName]) {
+            delete this.db.indexes[idxName];
+          }
+        }
+      }
+
       this.notifyChange();
       return { type: 'DDL', command: sql, message: 'Table dropped.' };
     }
@@ -1612,6 +1822,27 @@ export class OracleDatabase {
     }
 
     throw new OracleError('ORA-00901', 'invalid DROP command syntax');
+  }
+
+  execDropIndex(sql, match) {
+    const indexName = (match[3] || match[4]).toUpperCase();
+    const indexes = this.getIndexes();
+
+    if (!indexes[indexName]) {
+      throw new OracleError('ORA-01418', 'specified index does not exist');
+    }
+
+    delete indexes[indexName];
+    if (this.db.indexes && this.db.indexes[indexName]) {
+      delete this.db.indexes[indexName];
+    }
+
+    this.notifyChange();
+    return {
+      type: 'DDL',
+      command: sql,
+      message: 'Index dropped.'
+    };
   }
 
   execTruncate(sql) {
@@ -2008,6 +2239,34 @@ export class OracleDatabase {
     throw new OracleError('ORA-00900', 'invalid REVOKE statement syntax');
   }
 
+  checkUniqueConstraints(tableName, newRow, excludeRow = null) {
+    const indexes = this.getIndexes();
+    const uniqueIndexes = Object.values(indexes).filter(idx => idx.tableName === tableName && idx.isUnique);
+    const table = this.getTable(tableName);
+    if (!table || uniqueIndexes.length === 0) return;
+
+    for (const idx of uniqueIndexes) {
+      const allNull = idx.columns.every(c => newRow[c.name] === null || newRow[c.name] === undefined);
+      if (allNull) continue;
+
+      const duplicate = table.rows.some(existing => {
+        if (excludeRow && existing === excludeRow) return false;
+        return idx.columns.every(c => {
+          const v1 = existing[c.name];
+          const v2 = newRow[c.name];
+          if (v1 === null || v1 === undefined) {
+            return v2 === null || v2 === undefined;
+          }
+          return v1 === v2;
+        });
+      });
+
+      if (duplicate) {
+        throw new OracleError('ORA-00001', `unique constraint (${idx.name}) violated`);
+      }
+    }
+  }
+
   // DML: INSERT, UPDATE, DELETE
   execInsert(sql) {
     const match = sql.match(/^INSERT\s+INTO\s+([a-zA-Z0-9_$#]+)(?:\s*\(([^)]+)\))?\s*VALUES\s*\(([\s\S]+)\)$/i);
@@ -2085,6 +2344,9 @@ export class OracleDatabase {
       }
     }
 
+    // Check unique index constraints
+    this.checkUniqueConstraints(tableName, newRow);
+
     table.rows.push(newRow);
     this.notifyChange();
 
@@ -2120,6 +2382,7 @@ export class OracleDatabase {
     let updatedCount = 0;
     for (const row of table.rows) {
       if (!whereClause || this.evaluateWhereCondition(row, whereClause)) {
+        const tempRow = { ...row };
         for (const assign of assignments) {
           const colMeta = table.columns.find(c => c.name === assign.col);
           if (!colMeta) {
@@ -2137,8 +2400,25 @@ export class OracleDatabase {
           if (val !== null && colMeta.type.includes('BOOL')) {
             val = (val === true || val === 1 || String(val).toLowerCase() === 'true') ? 1 : 0;
           }
-          row[assign.col] = val;
+          tempRow[assign.col] = val;
         }
+
+        // Check primary key constraint
+        const pkCols = table.columns.filter(c => c.isPk);
+        if (pkCols.length > 0) {
+          const pkDuplicate = table.rows.some(existing => {
+            if (existing === row) return false;
+            return pkCols.every(pk => existing[pk.name] === tempRow[pk.name]);
+          });
+          if (pkDuplicate) {
+            throw new OracleError('ORA-00001', `unique constraint (${tableName}_PK) violated`);
+          }
+        }
+
+        // Check unique index constraints
+        this.checkUniqueConstraints(tableName, tempRow, row);
+
+        Object.assign(row, tempRow);
         updatedCount++;
       }
     }
@@ -2184,13 +2464,14 @@ export class OracleDatabase {
   // DQL: SELECT, JOINS, GROUP BY, AGGREGATES, SET OPS
   execSelect(sql) {
     const startTime = performance.now();
+    const cleanSql = sql.replace(/;+$/, '').trim();
 
-    const setOpMatch = sql.match(/\s+(UNION\s+ALL|UNION|INTERSECT|MINUS)\s+/i);
+    const setOpMatch = cleanSql.match(/\s+(UNION\s+ALL|UNION|INTERSECT|MINUS)\s+/i);
     if (setOpMatch) {
       const op = setOpMatch[1].toUpperCase();
       const splitIdx = setOpMatch.index;
-      const leftSql = sql.substring(0, splitIdx).trim();
-      const rightSql = sql.substring(splitIdx + setOpMatch[0].length).trim();
+      const leftSql = cleanSql.substring(0, splitIdx).trim();
+      const rightSql = cleanSql.substring(splitIdx + setOpMatch[0].length).trim();
 
       const leftRes = this.execSelect(leftSql);
       const rightRes = this.execSelect(rightSql);
@@ -2227,10 +2508,10 @@ export class OracleDatabase {
     }
 
     const selectRegex = /^\s*SELECT\s+(DISTINCT\s+|DESTINCT\s+)?([\s\S]+?)\s+FROM\s+([\s\S]+?)(?:\s+WHERE\s+([\s\S]+?))?(?:\s+GROUP\s+BY\s+([\s\S]+?))?(?:\s+HAVING\s+([\s\S]+?))?(?:\s+ORDER\s+BY\s+([\s\S]+?))?(?:\s+FETCH\s+FIRST\s+(\d+)\s+ROWS\s+ONLY)?$/i;
-    let match = sql.match(selectRegex);
+    let match = cleanSql.match(selectRegex);
 
     if (!match) {
-      const simpleNoFrom = sql.match(/^\s*SELECT\s+([\s\S]+)$/i);
+      const simpleNoFrom = cleanSql.match(/^\s*SELECT\s+([\s\S]+)$/i);
       if (simpleNoFrom && !/\bFROM\b/i.test(simpleNoFrom[1])) {
         throw new OracleError('ORA-00923', 'FROM keyword not found where expected');
       }
@@ -2304,7 +2585,13 @@ export class OracleDatabase {
     const hasAggregates = selectExpressions.some(e => e.isAggregate);
 
     if (groupByPart || hasAggregates || havingPart) {
-      dataset = this.processGroupBy(dataset, selectExpressions, groupByPart, havingPart);
+      let workingItems = this.processGroupByWorkingItems(dataset, selectExpressions, groupByPart, havingPart);
+
+      if (orderByPart) {
+        workingItems = this.processOrderByGroupedWorkingItems(workingItems, orderByPart, selectExpressions, isDistinct, groupByPart);
+      }
+
+      dataset = workingItems.map(item => item.projectedRow);
 
       if (isDistinct) {
         const seen = new Set();
@@ -2314,10 +2601,6 @@ export class OracleDatabase {
           seen.add(key);
           return true;
         });
-      }
-
-      if (orderByPart) {
-        dataset = this.processOrderBy(dataset, orderByPart, selectExpressions);
       }
     } else {
       let workingItems = dataset.map(sourceRow => {
@@ -2884,6 +3167,10 @@ export class OracleDatabase {
   }
 
   processGroupBy(dataset, selectExpressions, groupByPart, havingPart) {
+    return this.processGroupByWorkingItems(dataset, selectExpressions, groupByPart, havingPart).map(item => item.projectedRow);
+  }
+
+  processGroupByWorkingItems(dataset, selectExpressions, groupByPart, havingPart) {
     const groupCols = groupByPart
       ? this.splitCommaExpressions(groupByPart).map(c => c.trim().toUpperCase())
       : [];
@@ -2906,11 +3193,12 @@ export class OracleDatabase {
       groups.set('{}', { keyObj: {}, rows: [] });
     }
 
-    const result = [];
+    const workingItems = [];
 
     for (const group of groups.values()) {
       const row = {};
       const sampleRow = group.rows[0] || {};
+      group.sampleRow = sampleRow;
 
       for (const item of selectExpressions) {
         if (item.isAggregate) {
@@ -2937,10 +3225,10 @@ export class OracleDatabase {
         if (!passesHaving) continue;
       }
 
-      result.push(row);
+      workingItems.push({ group, projectedRow: row });
     }
 
-    return result;
+    return workingItems;
   }
 
   evaluateAggregateExpression(expr, groupRows) {
@@ -3744,6 +4032,103 @@ export class OracleDatabase {
     });
 
     return sorted;
+  }
+
+  processOrderByGroupedWorkingItems(workingItems, orderByPart, selectExpressions = [], isDistinct = false, groupByPart = null) {
+    const criteria = this.parseOrderByCriteria(orderByPart);
+    const groupCols = groupByPart
+      ? this.splitCommaExpressions(groupByPart).map(c => c.trim().toUpperCase())
+      : [];
+
+    if (isDistinct) {
+      for (const crit of criteria) {
+        if (/^\d+$/.test(crit.expr)) {
+          const pos = parseInt(crit.expr, 10);
+          if (pos < 1 || pos > selectExpressions.length) {
+            throw new OracleError('ORA-01785', 'ORDER BY item must be the number of a SELECT-list expression');
+          }
+          continue;
+        }
+        const critUpper = crit.expr.toUpperCase();
+        const isInSelect = selectExpressions.some(e => {
+          return e.alias.toUpperCase() === critUpper || e.expr.toUpperCase() === critUpper;
+        });
+        if (!isInSelect) {
+          throw new OracleError('ORA-01791', 'not a SELECTed expression');
+        }
+      }
+    }
+
+    if (workingItems.length > 0) {
+      const sampleItem = workingItems[0];
+      for (const crit of criteria) {
+        this.getGroupItemSortVal(sampleItem, crit.expr, selectExpressions, groupCols);
+      }
+    }
+
+    const sorted = [...workingItems];
+    sorted.sort((a, b) => {
+      for (const crit of criteria) {
+        const valA = this.getGroupItemSortVal(a, crit.expr, selectExpressions, groupCols);
+        const valB = this.getGroupItemSortVal(b, crit.expr, selectExpressions, groupCols);
+
+        if (valA === valB) continue;
+        if (valA === null || valA === undefined) return crit.nullsFirst ? -1 : 1;
+        if (valB === null || valB === undefined) return crit.nullsFirst ? 1 : -1;
+
+        if (typeof valA === 'number' && typeof valB === 'number') {
+          return crit.dir === 'ASC' ? valA - valB : valB - valA;
+        }
+
+        const comp = String(valA).localeCompare(String(valB));
+        return crit.dir === 'ASC' ? comp : -comp;
+      }
+      return 0;
+    });
+
+    return sorted;
+  }
+
+  getGroupItemSortVal(item, expr, selectExpressions, groupCols) {
+    // 1. Positional column index (1, 2, 3...)
+    if (/^\d+$/.test(expr) && selectExpressions && selectExpressions.length > 0) {
+      const pos = parseInt(expr, 10);
+      if (pos >= 1 && pos <= selectExpressions.length) {
+        const targetAlias = selectExpressions[pos - 1].alias;
+        return item.projectedRow[targetAlias];
+      }
+    }
+
+    const upper = expr.toUpperCase();
+
+    // 2. Check if matches projected alias or expression in SELECT list
+    if (item.projectedRow[expr] !== undefined) return item.projectedRow[expr];
+    if (item.projectedRow[upper] !== undefined) return item.projectedRow[upper];
+    const projEntry = Object.entries(item.projectedRow).find(([k]) => k.toUpperCase() === upper);
+    if (projEntry) return projEntry[1];
+
+    const matchedSelect = selectExpressions.find(e => e.expr.toUpperCase() === upper);
+    if (matchedSelect && item.projectedRow[matchedSelect.alias] !== undefined) {
+      return item.projectedRow[matchedSelect.alias];
+    }
+
+    // 3. Aggregate expression in ORDER BY (e.g. COUNT(*), AVG(marks), MAX(marks) - MIN(marks))
+    if (/\b(COUNT|SUM|AVG|MIN|MAX)\s*\(/i.test(expr)) {
+      return this.evaluateAggregateExpression(expr, item.group.rows);
+    }
+
+    // 4. Group column (e.g. subject, dept)
+    if (groupCols && groupCols.length > 0) {
+      if (groupCols.includes(upper) || groupCols.some(g => g.endsWith('.' + upper) || upper.endsWith('.' + g))) {
+        return this.evaluateExpression(expr, item.group.sampleRow);
+      }
+      // Non-group column without aggregate in ORDER BY when GROUP BY is present
+      if (item.group.sampleRow && (item.group.sampleRow[upper] !== undefined || Object.keys(item.group.sampleRow).some(k => k.toUpperCase() === upper))) {
+        throw new OracleError('ORA-00979', 'not a GROUP BY expression');
+      }
+    }
+
+    return this.evaluateExpression(expr, item.group.sampleRow);
   }
 
   processOrderBy(dataset, orderByPart, selectExpressions = []) {
