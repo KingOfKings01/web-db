@@ -886,6 +886,42 @@ assertTest("DROP INDEX on non-existent index throws ORA-01418", dropIdxMissing[0
 db.executeScript("DROP TABLE StudentIndexTest;");
 assertTest("DROP TABLE automatically cascades and cleans up remaining indexes", !db.getIndexes().IDX_STU_SUB_MARKS && !db.getIndexes().IDX_QUOTED && !db.getIndexes().IDX_STU_EMAIL_UNIQ);
 
+// 20. Aggregate Data Type Validation: SUM and AVG on non-numeric columns must throw ORA-01722
+db.executeScript(`
+  DROP TABLE StudentAggTest;
+  CREATE TABLE StudentAggTest (
+    id NUMBER,
+    name VARCHAR2(20),
+    subject VARCHAR2(10),
+    marks NUMBER
+  );
+  INSERT INTO StudentAggTest VALUES (1, 'Rohan', 'Sci', 90);
+  INSERT INTO StudentAggTest VALUES (2, 'Sara', 'Eng', 80);
+`);
+
+const sumNonNum = db.executeScript("SELECT SUM(subject) FROM StudentAggTest;");
+assertTest("SELECT SUM(subject) throws ORA-01722 (invalid number)", sumNonNum[0].type === 'ERROR' && sumNonNum[0].error.code === 'ORA-01722');
+
+const avgNonNum = db.executeScript("SELECT AVG(subject) FROM StudentAggTest;");
+assertTest("SELECT AVG(subject) throws ORA-01722 (invalid number)", avgNonNum[0].type === 'ERROR' && avgNonNum[0].error.code === 'ORA-01722');
+
+const sumGroupNonNum = db.executeScript("SELECT subject, SUM(subject) FROM StudentAggTest GROUP BY subject;");
+assertTest("GROUP BY with SUM(subject) throws ORA-01722", sumGroupNonNum[0].type === 'ERROR' && sumGroupNonNum[0].error.code === 'ORA-01722');
+
+const sumNumOk = db.executeScript("SELECT SUM(marks) FROM StudentAggTest;");
+assertTest("SELECT SUM(marks) calculates properly (170)", sumNumOk[0].rows[0]['SUM(MARKS)'] === 170);
+
+const avgNumOk = db.executeScript("SELECT AVG(marks) FROM StudentAggTest;");
+assertTest("SELECT AVG(marks) calculates properly (85)", avgNumOk[0].rows[0]['AVG(MARKS)'] === 85);
+
+const minMaxStrOk = db.executeScript("SELECT MIN(subject), MAX(subject) FROM StudentAggTest;");
+assertTest("MIN and MAX on strings succeed ('Eng', 'Sci')", minMaxStrOk[0].rows[0]['MIN(SUBJECT)'] === 'Eng' && minMaxStrOk[0].rows[0]['MAX(SUBJECT)'] === 'Sci');
+
+const countStrOk = db.executeScript("SELECT COUNT(subject) FROM StudentAggTest;");
+assertTest("COUNT on strings succeeds (2)", countStrOk[0].rows[0]['COUNT(SUBJECT)'] === 2);
+
+db.executeScript("DROP TABLE StudentAggTest;");
+
 
 console.log('==============================================');
 console.log(`  Tests Passed: ${passedCount} / ${totalCount}`);

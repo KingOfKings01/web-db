@@ -3290,7 +3290,7 @@ export class OracleDatabase {
       return rows.length;
     }
 
-    let values = rows.map(r => this.evaluateExpression(innerExpr, r)).filter(v => v !== null && v !== undefined);
+    let values = rows.map(r => this.evaluateExpression(innerExpr, r)).filter(v => v !== null && v !== undefined && v !== '');
 
     if (isDistinct) {
       values = Array.from(new Set(values));
@@ -3299,12 +3299,24 @@ export class OracleDatabase {
     if (func === 'COUNT') return values.length;
     if (values.length === 0) return null;
 
-    if (func === 'SUM') {
+    if (func === 'SUM' || func === 'AVG') {
+      for (const v of values) {
+        if (typeof v === 'boolean' || typeof v === 'object') {
+          throw new OracleError('ORA-01722', 'invalid number');
+        }
+        if (typeof v === 'string') {
+          const trimmedVal = v.trim();
+          if (!/^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/.test(trimmedVal)) {
+            throw new OracleError('ORA-01722', 'invalid number');
+          }
+        } else if (typeof v !== 'number' || isNaN(v)) {
+          throw new OracleError('ORA-01722', 'invalid number');
+        }
+      }
       const sum = values.reduce((s, v) => s + Number(v), 0);
-      return this.cleanNumber(sum);
-    }
-    if (func === 'AVG') {
-      const sum = values.reduce((s, v) => s + Number(v), 0);
+      if (func === 'SUM') {
+        return this.cleanNumber(sum);
+      }
       return this.cleanNumber(Math.round((sum / values.length) * 100) / 100);
     }
     if (func === 'MIN') {
