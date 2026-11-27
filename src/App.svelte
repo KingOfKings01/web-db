@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { get } from 'svelte/store';
-  import { comparisonTablesStore, oracleDb } from './lib/db-store.js';
+  import { comparisonTablesStore, oracleDb, activeDatabaseStore, databasesStore } from './lib/db-store.js';
 
   import Header from './components/Header.svelte';
   import ConnectionsSidebar from './components/ConnectionsSidebar.svelte';
@@ -18,6 +18,22 @@
 SELECT name, course_id FROM students;
 SELECT * FROM courses;`;
   const UI_STATE_STORAGE_KEY = 'ORACLE_STUDIO_UI_STATE';
+  const SCRIPTS_STORAGE_KEY = 'ORACLE_STUDIO_SCRIPTS_BY_CONN_V1';
+  const HISTORY_STORAGE_KEY = 'ORACLE_STUDIO_HISTORY_BY_CONN_V1';
+  const RESULTS_STORAGE_KEY = 'ORACLE_STUDIO_RESULTS_BY_CONN_V1';
+
+  let currentActiveDb = 'SQL_CLASS';
+  let scriptsByConnection = {
+    'SQL_CLASS': DEFAULT_QUERY,
+    'ORACLE26': `-- ORACLE26 Worksheet\nSELECT sysdate FROM dual;\n`
+  };
+  let historyByConnection = {
+    'SQL_CLASS': [],
+    'ORACLE26': []
+  };
+  let resultsByConnection = {};
+  let statusByConnection = {};
+
   let theme = 'theme-light';
   let editorCode = DEFAULT_QUERY;
   let queryResults = [];
@@ -105,6 +121,65 @@ SELECT * FROM courses;`;
     }
   }
 
+  function saveConnectionState() {
+    try {
+      localStorage.setItem(SCRIPTS_STORAGE_KEY, JSON.stringify(scriptsByConnection));
+      localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(historyByConnection));
+      localStorage.setItem(RESULTS_STORAGE_KEY, JSON.stringify(resultsByConnection));
+    } catch (e) {
+      console.error('Failed to save connection state', e);
+    }
+  }
+
+  // Reactive connection switch when active database changes
+  $: if (uiStateLoaded && $activeDatabaseStore) {
+    const targetDb = $activeDatabaseStore.toUpperCase();
+    if (targetDb !== currentActiveDb) {
+      // 1. Save state for outgoing connection
+      const outgoingCode = editorComponent ? editorComponent.getCode() : editorCode;
+      scriptsByConnection[currentActiveDb] = outgoingCode;
+      resultsByConnection[currentActiveDb] = queryResults;
+      statusByConnection[currentActiveDb] = queryStatus;
+
+      // 2. Switch current connection key
+      currentActiveDb = targetDb;
+
+      // 3. Initialize target state if missing
+      if (scriptsByConnection[targetDb] === undefined) {
+        scriptsByConnection[targetDb] = targetDb === 'SQL_CLASS' 
+          ? DEFAULT_QUERY 
+          : `-- ${targetDb} Worksheet\nSELECT sysdate FROM dual;\n`;
+      }
+      if (!historyByConnection[targetDb]) {
+        historyByConnection[targetDb] = [];
+      }
+      if (!resultsByConnection[targetDb]) {
+        resultsByConnection[targetDb] = [];
+      }
+      if (!statusByConnection[targetDb]) {
+        statusByConnection[targetDb] = 'Ready';
+      }
+
+      // 4. Load incoming connection's script & output
+      editorCode = scriptsByConnection[targetDb];
+      if (editorComponent) {
+        editorComponent.setCode(editorCode);
+      }
+      queryResults = resultsByConnection[targetDb];
+      queryStatus = statusByConnection[targetDb];
+
+      saveConnectionState();
+    }
+  }
+
+  // Keep active connection's script synchronized as user types
+  $: if (uiStateLoaded && currentActiveDb && editorCode !== undefined) {
+    scriptsByConnection[currentActiveDb] = editorCode;
+    try {
+      localStorage.setItem(SCRIPTS_STORAGE_KEY, JSON.stringify(scriptsByConnection));
+    } catch (_) {}
+  }
+
   function handleToggleTheme() {
     theme = theme === 'theme-light' ? 'theme-dark' : 'theme-light';
     document.body.classList.remove('theme-light', 'theme-dark');
@@ -115,7 +190,21 @@ SELECT * FROM courses;`;
     if (confirm('Reset the database, workspace layout, query results, and Tables window to their defaults?')) {
       oracleDb.resetDatabase();
       comparisonTablesStore.set([]);
+      currentActiveDb = 'SQL_CLASS';
+      scriptsByConnection = {
+        'SQL_CLASS': DEFAULT_QUERY,
+        'ORACLE26': `-- ORACLE26 Worksheet\nSELECT sysdate FROM dual;\n`
+      };
+      historyByConnection = {
+        'SQL_CLASS': [],
+        'ORACLE26': []
+      };
+      resultsByConnection = {};
+      statusByConnection = {};
       editorCode = DEFAULT_QUERY;
+      if (editorComponent) {
+        editorComponent.setCode(editorCode);
+      }
       queryResults = [];
       queryStatus = 'Ready';
       isLeftCollapsed = false;
@@ -130,6 +219,9 @@ SELECT * FROM courses;`;
       document.body.classList.add(theme);
       tableCanvasComponent?.resetCanvasState();
       try {
+        localStorage.removeItem(SCRIPTS_STORAGE_KEY);
+        localStorage.removeItem(HISTORY_STORAGE_KEY);
+        localStorage.removeItem(RESULTS_STORAGE_KEY);
         localStorage.removeItem('ORACLE_STUDIO_THEME');
         localStorage.removeItem('ORACLE_STUDIO_EDITOR_CODE');
       } catch (error) {
@@ -169,6 +261,7 @@ SELECT * FROM courses;`;
     if (!scriptText || !scriptText.trim()) return;
 
     queryStatus = 'Executing...';
+    const activeKey = (oracleDb.getActiveDatabase() || currentActiveDb || 'SQL_CLASS').toUpperCase();
 
     setTimeout(() => {
       try {
@@ -176,14 +269,36 @@ SELECT * FROM courses;`;
         queryResults = results;
 
         const hasError = results.some(r => r.type === 'ERROR');
+        let statusText = 'Ready';
         if (hasError) {
-          queryStatus = 'Oracle Error';
+          statusText = 'Oracle Error';
         } else {
           const totalRows = results
             .filter(r => r.type === 'SELECT' || r.type === 'DESCRIBE')
             .reduce((sum, r) => sum + r.rows.length, 0);
-          queryStatus = `Completed (${totalRows} rows)`;
+          statusText = `Completed (${totalRows} rows)`;
         }
+        queryStatus = statusText;
+
+        // Record history item for this specific connection
+        const historyItem = {
+          id: Date.now() + Math.random().toString(36).slice(2, 6),
+          sql: scriptText.trim(),
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          date: new Date().toLocaleDateString(),
+          hasError,
+          status: statusText,
+          commandsCount: results.length
+        };
+
+        const existing = (historyByConnection[activeKey] || []).filter(h => h.sql !== scriptText.trim());
+        historyByConnection[activeKey] = [historyItem, ...existing].slice(0, 50);
+        historyByConnection = { ...historyByConnection };
+
+        resultsByConnection[activeKey] = results;
+        statusByConnection[activeKey] = statusText;
+        scriptsByConnection[activeKey] = scriptText;
+        saveConnectionState();
       } catch (err) {
         queryStatus = 'Error';
         queryResults = [{
@@ -191,8 +306,39 @@ SELECT * FROM courses;`;
           command: scriptText,
           message: `ORA-00600: internal error code [${err.message || 'unknown'}]`
         }];
+        resultsByConnection[activeKey] = queryResults;
+        statusByConnection[activeKey] = queryStatus;
+        saveConnectionState();
       }
     }, 10);
+  }
+
+  function handleSelectConnection(dbName) {
+    try {
+      oracleDb.connectDatabase(dbName);
+    } catch (err) {
+      alert(err.message || String(err));
+    }
+  }
+
+  function handleClearHistory() {
+    historyByConnection[currentActiveDb] = [];
+    historyByConnection = { ...historyByConnection };
+    saveConnectionState();
+  }
+
+  function handleLoadHistoryItem(sql) {
+    handleLoadIntoEditor(sql);
+    scriptsByConnection[currentActiveDb] = sql;
+    saveConnectionState();
+  }
+
+  function handleClearOutput() {
+    queryResults = [];
+    queryStatus = 'Ready';
+    resultsByConnection[currentActiveDb] = [];
+    statusByConnection[currentActiveDb] = 'Ready';
+    saveConnectionState();
   }
 
   function handleInsertText(text) {
@@ -349,13 +495,30 @@ SELECT * FROM courses;`;
     let restoredWorkspace = false;
     let hasLegacyEditorCode = false;
     try {
+      const savedScripts = localStorage.getItem(SCRIPTS_STORAGE_KEY);
+      if (savedScripts) {
+        scriptsByConnection = JSON.parse(savedScripts);
+      }
+      const savedHistory = localStorage.getItem(HISTORY_STORAGE_KEY);
+      if (savedHistory) {
+        historyByConnection = JSON.parse(savedHistory);
+      }
+      const savedResults = localStorage.getItem(RESULTS_STORAGE_KEY);
+      if (savedResults) {
+        resultsByConnection = JSON.parse(savedResults);
+      }
+
+      currentActiveDb = (oracleDb.getActiveDatabase() || 'SQL_CLASS').toUpperCase();
+
       const savedState = localStorage.getItem(UI_STATE_STORAGE_KEY);
       if (savedState) {
         const state = JSON.parse(savedState);
         if (state && typeof state === 'object') {
           restoredWorkspace = true;
           if (state.theme === 'theme-dark' || state.theme === 'theme-light') theme = state.theme;
-          if (typeof state.editorCode === 'string') editorCode = state.editorCode;
+          if (typeof state.editorCode === 'string' && !savedScripts) {
+            scriptsByConnection[currentActiveDb] = state.editorCode;
+          }
           if (Array.isArray(state.queryResults)) queryResults = state.queryResults;
           if (typeof state.queryStatus === 'string') queryStatus = state.queryStatus === 'Executing...' ? 'Ready' : state.queryStatus;
           if (typeof state.isLeftCollapsed === 'boolean') isLeftCollapsed = state.isLeftCollapsed;
@@ -375,10 +538,26 @@ SELECT * FROM courses;`;
         if (savedTheme === 'theme-dark' || savedTheme === 'theme-light') theme = savedTheme;
         const savedEditorCode = localStorage.getItem('ORACLE_STUDIO_EDITOR_CODE');
         hasLegacyEditorCode = savedEditorCode !== null;
-        if (savedEditorCode !== null) editorCode = savedEditorCode;
+        if (savedEditorCode !== null && !savedScripts) {
+          scriptsByConnection[currentActiveDb] = savedEditorCode;
+        }
       }
     } catch (error) {
       console.error('Failed to restore workspace state', error);
+    }
+
+    if (scriptsByConnection[currentActiveDb] !== undefined) {
+      editorCode = scriptsByConnection[currentActiveDb];
+    } else {
+      editorCode = currentActiveDb === 'SQL_CLASS' ? DEFAULT_QUERY : `-- ${currentActiveDb} Worksheet\nSELECT sysdate FROM dual;\n`;
+      scriptsByConnection[currentActiveDb] = editorCode;
+    }
+
+    if (resultsByConnection[currentActiveDb]) {
+      queryResults = resultsByConnection[currentActiveDb];
+    }
+    if (statusByConnection[currentActiveDb]) {
+      queryStatus = statusByConnection[currentActiveDb];
     }
 
     document.body.classList.remove('theme-light', 'theme-dark');
@@ -492,6 +671,12 @@ SELECT * FROM courses;`;
           onUncollapseLeft={() => isLeftCollapsed = false}
           onOpenImport={() => handleOpenImport()}
           onOpenExport={() => handleOpenExport('editor')}
+          activeConnection={currentActiveDb}
+          databases={$databasesStore}
+          history={historyByConnection[currentActiveDb] || []}
+          onSelectConnection={handleSelectConnection}
+          onClearHistory={handleClearHistory}
+          onLoadHistoryItem={handleLoadHistoryItem}
         />
       </div>
 
@@ -509,7 +694,7 @@ SELECT * FROM courses;`;
           results={queryResults}
           status={queryStatus}
           onAddToTables={handleAddComparisonTable}
-          onClear={() => { queryResults = []; queryStatus = 'Ready'; }}
+          onClear={handleClearOutput}
         />
       {/if}
     </section>

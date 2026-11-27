@@ -13,6 +13,12 @@
   export let theme = 'theme-light';
   export let onOpenImport = () => {};
   export let onOpenExport = () => {};
+  export let activeConnection = 'SQL_CLASS';
+  export let databases = {};
+  export let history = [];
+  export let onSelectConnection = (name) => {};
+  export let onClearHistory = () => {};
+  export let onLoadHistoryItem = (sql) => {};
 
   let host;
   let monaco;
@@ -24,6 +30,19 @@
   let lastEditorValue = '';
   let validationLine = null;
   let validationMessage = '';
+  let showHistory = false;
+
+  function handleWindowClick(e) {
+    if (showHistory && !e.target.closest('.history-dropdown-anchor')) {
+      showHistory = false;
+    }
+  }
+
+  function handleWindowKeydown(e) {
+    if (e.key === 'Escape' && showHistory) {
+      showHistory = false;
+    }
+  }
 
   const sqlKeywords = [
     'SELECT', 'FROM', 'WHERE', 'INSERT', 'INTO', 'VALUES', 'UPDATE', 'SET',
@@ -416,6 +435,8 @@
   });
 </script>
 
+<svelte:window on:click={handleWindowClick} on:keydown={handleWindowKeydown} />
+
 <div class="editor-section">
   <div class="section-toolbar">
     <div class="toolbar-left">
@@ -424,7 +445,25 @@
           &rsaquo;
         </button>
       {/if}
-      <span class="section-heading">Input</span>
+
+      <!-- Connection Worksheet Tabs -->
+      <div class="worksheet-tabs" role="tablist" aria-label="Connection Worksheets">
+        {#each Object.entries(databases || {}) as [dbKey, dbObj]}
+          {@const isActive = (activeConnection || '').toUpperCase() === dbKey.toUpperCase()}
+          <button
+            class="worksheet-tab"
+            class:active={isActive}
+            role="tab"
+            aria-selected={isActive}
+            on:click={() => onSelectConnection(dbKey)}
+            title="Switch to {dbObj.name || dbKey} worksheet"
+          >
+            <span class="tab-conn-indicator" class:connected={isActive}>●</span>
+            <span class="tab-conn-name">{dbObj.name || dbKey}</span>
+            <span class="tab-label-sub">sql</span>
+          </button>
+        {/each}
+      </div>
     </div>
 
     <div class="toolbar-right">
@@ -436,6 +475,88 @@
       </button>
 
       <div class="toolbar-separator"></div>
+
+      <!-- Script History Button with Dropdown -->
+      <div class="history-dropdown-anchor">
+        <button
+          class="btn-tool-icon btn-history-btn"
+          class:active={showHistory}
+          on:click|stopPropagation={() => showHistory = !showHistory}
+          title="Script History ({activeConnection})"
+          aria-label="Script History for {activeConnection}"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"></circle>
+            <polyline points="12 6 12 12 16 14"></polyline>
+          </svg>
+          {#if history && history.length > 0}
+            <span class="history-badge">{history.length}</span>
+          {/if}
+        </button>
+
+        {#if showHistory}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="history-popup-card" on:click|stopPropagation>
+            <div class="history-popup-header">
+              <div class="history-popup-title">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <polyline points="12 6 12 12 16 14"></polyline>
+                </svg>
+                <span>History: <strong>{activeConnection}</strong></span>
+              </div>
+              <div class="history-popup-actions">
+                {#if history && history.length > 0}
+                  <button class="btn-clear-history" on:click={onClearHistory} title="Clear history for this connection">
+                    Clear
+                  </button>
+                {/if}
+                <button class="history-close-btn" on:click={() => showHistory = false} title="Close">✕</button>
+              </div>
+            </div>
+
+            <div class="history-list">
+              {#if !history || history.length === 0}
+                <div class="history-empty">
+                  <p>No queries executed on <strong>{activeConnection}</strong> yet.</p>
+                  <small>When you run SQL statements here, their history will be recorded for this connection.</small>
+                </div>
+              {:else}
+                {#each history as item (item.id)}
+                  <div class="history-item">
+                    <div class="history-item-top">
+                      <span class="history-time">{item.timestamp}</span>
+                      <span class="history-status" class:err={item.hasError} class:ok={!item.hasError}>
+                        {item.status}
+                      </span>
+                    </div>
+                    <!-- svelte-ignore a11y_click_events_have_key_events -->
+                    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+                    <pre class="history-sql-preview" on:click={() => { onLoadHistoryItem(item.sql); showHistory = false; }} title="Click to load into editor">{item.sql}</pre>
+                    <div class="history-item-actions">
+                      <button 
+                        class="btn-history-load" 
+                        on:click={() => { onLoadHistoryItem(item.sql); showHistory = false; }}
+                        title="Load into Editor"
+                      >
+                        Load into Editor
+                      </button>
+                      <button 
+                        class="btn-history-copy" 
+                        on:click={() => navigator.clipboard?.writeText(item.sql)}
+                        title="Copy SQL"
+                      >
+                        Copy
+                      </button>
+                    </div>
+                  </div>
+                {/each}
+              {/if}
+            </div>
+          </div>
+        {/if}
+      </div>
 
       <button
         class="btn-tool-icon"
